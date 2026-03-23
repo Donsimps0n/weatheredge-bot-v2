@@ -23,11 +23,55 @@ try:
     from cross_market_filter import apply_cross_market_filter
     from ladder_builder import build_ladder
     from trader_execution import PaperExecutionAdapter, LiveExecutionAdapter
-except ImportError:
-    # Stubs for development
-    Ledger = object
-    FeeClient = object
-    Config = object
+except ImportError as _import_err:
+    import logging as _log
+    _log.getLogger(__name__).warning(
+        "One or more local modules missing (%s) — running with stubs", _import_err
+    )
+
+    class Ledger:  # noqa: E701
+        def __init__(self, db_path="ledger.db"): self.db_path = db_path
+        def init_db(self): pass
+        def log_alert(self, a): pass
+        def log_decision(self, **kw): pass
+
+    class FeeClient:
+        def get_taker_fee(self): return 0.002
+
+    class Config:
+        min_theo_ev: float = 0.02
+        db_path: str = "ledger.db"
+
+    def classify_regime(data):  # noqa: E306
+        return "unknown"
+
+    def compute_t_entry(resolution_time, local_tz):  # noqa: E306
+        return resolution_time
+
+    def get_diurnal_stage(now_utc, local_tz):  # noqa: E306
+        return "unknown"
+
+    class NowcasterEnsemble:
+        def __init__(self, config=None): pass
+        def forecast(self, **kw): return {"yes_prob": 0.5, "no_prob": 0.5, "bin_probs": [], "source": "stub"}
+
+    class EnsembleProbability:
+        def __init__(self, config=None): pass
+        def estimate_probability(self, **kw): return {"yes_prob": 0.5, "no_prob": 0.5, "bin_probs": [], "source": "stub"}
+
+    def apply_cross_market_filter(probs, market, markets):  # noqa: E306
+        return probs
+
+    def build_ladder(probs=None, category=None, prices=None, **kw):  # noqa: E306
+        return []
+
+    class PaperExecutionAdapter:
+        def __init__(self, ledger): self.ledger = ledger
+        def place_orders(self, **kw): return []
+
+    class LiveExecutionAdapter:
+        def __init__(self, ledger, fee_client): self.ledger = ledger
+        def place_orders(self, **kw): return []
 
 
 logger = logging.getLogger(__name__)
@@ -267,7 +311,7 @@ class TradingScheduler:
                     logger.info(
                         f"{market_slug}: EV {theoretical_full_ev:.4f} < "
                         f"min {min_theo_ev:.4f}, not trading"
-                    )
+     0              )
                     continue
 
                 # Step 10: Freeze snapshot and place orders
@@ -621,7 +665,7 @@ class BacktestRunner:
                     if market_result.signal_only:
                         result.signal_only_count += 1
                     else:
-                        result.trades_placed += market_result.trades_placed
+    0                   result.trades_placed += market_result.trades_placed
 
                     result.pnl += market_result.pnl
                     pnls.append(market_result.pnl)
@@ -876,10 +920,46 @@ class AlertSystem:
 # ============================================================================
 
 if __name__ == "__main__":
+    import os
+    from config import create_default_config
+    from ledger_telemetry import Ledger as LedgerTelemetry
+    from gamma_client import get_markets, invalidate_cache
+
     logging.basicConfig(
-        level=logging.DEBUG,
-        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+        level=logging.INFO,
+        format="%(asctime)s  %(levelname)-8s  %(name)s  %(message)s",
     )
 
-    logger.info("Polymarket Temperature Trading Bot - Scheduler Module")
-    logger.info("This module should be imported and used by the main bot application.")
+    cfg = create_default_config()
+    ledger = LedgerTelemetry(db_path=cfg.db_path)
+    ledger.init_db()
+
+    paper = os.environ.get("PAPER_MODE", "true").lower() != "false"
+    logger.info("WeatherEdge Bot v2 starting (paper_mode=%s)", paper)
+
+    scheduler = TradingScheduler(
+        ledger=ledger,
+        fee_client=None,          # wired via fee_client.py when CLOB keys present
+        config=cfg,
+        paper_mode=paper,
+        telegram_token=os.environ.get("TELEGRAM_BOT_TOKEN"),
+    )
+
+    # Burst triggers invalidate the Gamma cache so fresh market prices are fetched
+    _last_trigger: str = ""
+
+    def _get_markets_with_burst() -> list:
+        global _last_trigger
+        _, trigger = scheduler.is_burst_trigger(datetime.now(timezone.utc))
+        if trigger and trigger != _last_trigger:
+            logger.info("Burst trigger %s — invalidating Gamma cache", trigger)
+            invalidate_cache()
+            _last_trigger = trigger
+        return get_markets()
+
+    interval = int(os.environ.get("CYCLE_INTERVAL_MINUTES", "15"))
+    logger.info("Starting schedule loop (interval=%dm)", interval)
+    scheduler.schedule_loop(
+        markets_fn=_get_markets_with_burst,
+        interval_minutes=interval,
+    )
