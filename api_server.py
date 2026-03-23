@@ -167,6 +167,81 @@ def activity_log():
     return jsonify({"log": _state["activity_log"][-50:]})
 
 
+
+# ---------- Config (proxy key + mode) ----------
+RAILWAY_API_TOKEN = os.environ.get("RAILWAY_API_TOKEN", "")
+RAILWAY_SERVICE_ID = os.environ.get("RAILWAY_SERVICE_ID", "")
+RAILWAY_ENV_ID = os.environ.get("RAILWAY_ENVIRONMENT_ID", "")
+
+
+@app.route("/api/config", methods=["POST"])
+def save_config():
+    """Accept proxy_key and trading_mode. Store as Railway env vars."""
+    data = request.get_json(force=True)
+    proxy_key = (data.get("proxy_key") or "").strip()
+    trading_mode = data.get("trading_mode", "paper").strip().lower()
+
+    if not proxy_key or not proxy_key.startswith("pk-"):
+        return jsonify({"ok": False, "error": "Invalid proxy key — must start with pk-"}), 400
+    if trading_mode not in ("paper", "live"):
+        return jsonify({"ok": False, "error": "trading_mode must be paper or live"}), 400
+
+    # Update in-memory state immediately
+    _state["paper_mode"] = trading_mode == "paper"
+    os.environ["POLYMARKET_PROXY_KEY"] = proxy_key
+    os.environ["PAPER_MODE"] = str(_state["paper_mode"]).lower()
+    _log(f"Config updated: mode={trading_mode}, proxy key set (len={len(proxy_key)})")
+
+    # Persist to Railway env vars via Railway GraphQL API
+    if RAILWAY_API_TOKEN and RAILWAY_SERVICE_ID and RAILWAY_ENV_ID:
+        try:
+            _set_railway_env_vars({
+                "POLYMARKET_PROXY_KEY": proxy_key,
+                "PAPER_MODE": str(_state["paper_mode"]).lower(),
+            })
+            logger.info("Proxy key + mode persisted to Railway env vars")
+        except Exception as exc:
+            logger.error("Failed to persist to Railway: %s", exc)
+            return jsonify({"ok": True, "warning": "Saved in memory but Railway persist failed"})
+    else:
+        logger.warning("RAILWAY_API_TOKEN / SERVICE_ID / ENV_ID not set — saved in memory only")
+
+    return jsonify({"ok": True})
+
+
+def _set_railway_env_vars(variables: dict):
+    """Upsert environment variables on Railway via the GraphQL API."""
+    import urllib.request
+    import json as _json
+    mutation = """
+    mutation($input: VariableCollectionUpsertInput!) {
+      variableCollectionUpsert(input: $input)
+    }
+    """
+    payload = _json.dumps({
+        "query": mutation,
+        "variables": {
+            "input": {
+                "serviceId": RAILWAY_SERVICE_ID,
+                "environmentId": RAILWAY_ENV_ID,
+                "variables": variables,
+            }
+        },
+    }).encode("utf-8")
+    req = urllib.request.Request(
+        "https://backboard.railway.app/graphql/v2",
+        data=payload,
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {RAILWAY_API_TOKEN}",
+        },
+    )
+    with urllib.request.urlopen(req, timeout=10) as resp:
+        body = _json.loads(resp.read())
+        if "errors" in body:
+            raise RuntimeError(f"Railway API error: {body['errors']}")
+
+
 # ---------- Boot ----------
 _boot = time.time()
 PORT = int(os.environ.get("PORT", 8080))
