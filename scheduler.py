@@ -311,7 +311,7 @@ class TradingScheduler:
                     logger.info(
                         f"{market_slug}: EV {theoretical_full_ev:.4f} < "
                         f"min {min_theo_ev:.4f}, not trading"
-     0              )
+                    )
                     continue
 
                 # Step 10: Freeze snapshot and place orders
@@ -665,7 +665,7 @@ class BacktestRunner:
                     if market_result.signal_only:
                         result.signal_only_count += 1
                     else:
-    0                   result.trades_placed += market_result.trades_placed
+                        result.trades_placed += market_result.trades_placed
 
                     result.pnl += market_result.pnl
                     pnls.append(market_result.pnl)
