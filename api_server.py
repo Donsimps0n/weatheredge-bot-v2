@@ -111,6 +111,73 @@ def markets():
     })
 
 
+
+@app.route("/api/debug/gamma")
+def debug_gamma():
+    """Debug: raw Gamma API test."""
+    import requests as req
+    results = {}
+    
+    # Test 1: tag_slug=weather
+    try:
+        r1 = req.get("https://gamma-api.polymarket.com/markets",
+                      params={"active": "true", "closed": "false", "limit": 5, "tag_slug": "weather"},
+                      timeout=15, headers={"User-Agent": "weatheredge-bot/2.0"})
+        d1 = r1.json()
+        results["tag_slug_weather"] = {"status": r1.status_code, "count": len(d1) if isinstance(d1, list) else "not_list", "type": str(type(d1).__name__)}
+        if isinstance(d1, list) and len(d1) > 0:
+            results["tag_slug_weather"]["first_q"] = d1[0].get("question", "no question")
+            results["tag_slug_weather"]["first_keys"] = list(d1[0].keys())[:10]
+        elif isinstance(d1, dict):
+            results["tag_slug_weather"]["keys"] = list(d1.keys())[:10]
+            if "data" in d1:
+                results["tag_slug_weather"]["data_count"] = len(d1["data"]) if isinstance(d1["data"], list) else "not_list"
+    except Exception as e:
+        results["tag_slug_weather"] = {"error": str(e)}
+    
+    # Test 2: tag=weather (different param name)
+    try:
+        r2 = req.get("https://gamma-api.polymarket.com/markets",
+                      params={"active": "true", "closed": "false", "limit": 5, "tag": "weather"},
+                      timeout=15, headers={"User-Agent": "weatheredge-bot/2.0"})
+        d2 = r2.json()
+        results["tag_weather"] = {"status": r2.status_code, "count": len(d2) if isinstance(d2, list) else "not_list", "type": str(type(d2).__name__)}
+        if isinstance(d2, list) and len(d2) > 0:
+            results["tag_weather"]["first_q"] = d2[0].get("question", "no question")
+    except Exception as e:
+        results["tag_weather"] = {"error": str(e)}
+    
+    # Test 3: no tag at all, just search for temperature keyword
+    try:
+        r3 = req.get("https://gamma-api.polymarket.com/markets",
+                      params={"active": "true", "closed": "false", "limit": 100},
+                      timeout=15, headers={"User-Agent": "weatheredge-bot/2.0"})
+        d3 = r3.json()
+        if isinstance(d3, list):
+            temp_markets = [m for m in d3 if "temperature" in m.get("question", "").lower()]
+            results["no_tag"] = {"status": r3.status_code, "total": len(d3), "temp_found": len(temp_markets)}
+            if temp_markets:
+                results["no_tag"]["first_temp_q"] = temp_markets[0].get("question", "")
+        else:
+            results["no_tag"] = {"status": r3.status_code, "type": str(type(d3).__name__), "keys": list(d3.keys())[:10]}
+    except Exception as e:
+        results["no_tag"] = {"error": str(e)}
+    
+    # Test 4: Polymarket events API
+    try:
+        r4 = req.get("https://gamma-api.polymarket.com/events",
+                      params={"active": "true", "closed": "false", "limit": 5, "tag": "weather"},
+                      timeout=15, headers={"User-Agent": "weatheredge-bot/2.0"})
+        d4 = r4.json()
+        results["events_api"] = {"status": r4.status_code, "count": len(d4) if isinstance(d4, list) else "not_list", "type": str(type(d4).__name__)}
+        if isinstance(d4, list) and len(d4) > 0:
+            results["events_api"]["first_title"] = d4[0].get("title", d4[0].get("question", "no title"))
+            results["events_api"]["first_keys"] = list(d4[0].keys())[:15]
+    except Exception as e:
+        results["events_api"] = {"error": str(e)}
+    
+    return jsonify(results)
+
 @app.route("/api/scan", methods=["POST"])
 def scan():
     """Fetch markets from Gamma, classify weather ones, cache results."""
@@ -180,7 +247,7 @@ def save_config():
     trading_mode = data.get("trading_mode", "paper").strip().lower()
 
     if not proxy_key or not proxy_key.startswith("pk-"):
-        return jsonify({"ok": False, "error": "Invalid proxy key ÃÂ¢ÃÂÃÂ must start with pk-"}), 400
+        return jsonify({"ok": False, "error": "Invalid proxy key ÃÂÃÂ¢ÃÂÃÂÃÂÃÂ must start with pk-"}), 400
     if trading_mode not in ("paper", "live"):
         return jsonify({"ok": False, "error": "trading_mode must be paper or live"}), 400
 
@@ -202,7 +269,7 @@ def save_config():
             logger.error("Failed to persist to Railway: %s", exc)
             return jsonify({"ok": True, "warning": "Saved in memory but Railway persist failed"})
     else:
-        logger.warning("RAILWAY_API_TOKEN / SERVICE_ID / ENV_ID not set ÃÂ¢ÃÂÃÂ saved in memory only")
+        logger.warning("RAILWAY_API_TOKEN / SERVICE_ID / ENV_ID not set ÃÂÃÂ¢ÃÂÃÂÃÂÃÂ saved in memory only")
 
     return jsonify({"ok": True})
 
