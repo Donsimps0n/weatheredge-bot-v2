@@ -239,13 +239,34 @@ def scan():
         _state["last_scan"] = datetime.now(timezone.utc).isoformat()
         _state["scan_count"] += 1
         _log(f"Scan complete: {len(raw)} total, {len(weather)} weather markets")
+        
+        # Diversify: round-robin across cities for better coverage
+        _by_city = {}
+        for _w in weather:
+            _c = _w.get("city", "?")
+            _by_city.setdefault(_c, []).append(_w)
+        _diverse = []
+        _idx = 0
+        _cities = sorted(_by_city.keys())
+        while len(_diverse) < min(50, len(weather)):
+            _added = False
+            for _c in _cities:
+                if _idx < len(_by_city[_c]):
+                    _diverse.append(_by_city[_c][_idx])
+                    _added = True
+                if len(_diverse) >= 50:
+                    break
+            _idx += 1
+            if not _added:
+                break
+
         return jsonify({
             "weather_markets": len(weather),
             "total_markets": len(raw),
-            "markets": weather[:50],
+            "markets": _diverse,
             "scan_time": _state["last_scan"],
             "count": len(weather),
-            "edges": weather[:50],
+            "edges": _diverse,
             "cache_size": len(raw),
         })
     except Exception as exc:
@@ -287,7 +308,7 @@ def save_config():
     trading_mode = data.get("trading_mode", "paper").strip().lower()
 
     if not proxy_key or not proxy_key.startswith("pk-"):
-        return jsonify({"ok": False, "error": "Invalid proxy key ÃÂÃÂ¢ÃÂÃÂÃÂÃÂ must start with pk-"}), 400
+        return jsonify({"ok": False, "error": "Invalid proxy key ÃÂÃÂÃÂÃÂ¢ÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂ must start with pk-"}), 400
     if trading_mode not in ("paper", "live"):
         return jsonify({"ok": False, "error": "trading_mode must be paper or live"}), 400
 
@@ -309,7 +330,7 @@ def save_config():
             logger.error("Failed to persist to Railway: %s", exc)
             return jsonify({"ok": True, "warning": "Saved in memory but Railway persist failed"})
     else:
-        logger.warning("RAILWAY_API_TOKEN / SERVICE_ID / ENV_ID not set ÃÂÃÂ¢ÃÂÃÂÃÂÃÂ saved in memory only")
+        logger.warning("RAILWAY_API_TOKEN / SERVICE_ID / ENV_ID not set ÃÂÃÂÃÂÃÂ¢ÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂ saved in memory only")
 
     return jsonify({"ok": True})
 
