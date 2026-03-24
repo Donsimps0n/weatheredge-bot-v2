@@ -211,17 +211,23 @@ def scan():
         _log("Scan triggered via API")
         raw = _gamma_get_markets()
         _state["markets_cache"] = raw
+        # get_markets() already returns only temperature markets
+        # so no need to re-filter with classify_market()
         weather = []
         for m in raw:
-            q = m.get("question", "")
-            if classify_market(q):
-                weather.append({
-                    "slug": m.get("slug", ""),
-                    "question": q,
-                    "outcomes": m.get("outcomes", []),
-                    "active": m.get("active", False),
-                    "end_date": m.get("end_date_iso", ""),
-                })
+            weather.append({
+                "slug": m.get("slug", ""),
+                "question": m.get("question", m.get("category", "")),
+                "city": m.get("city", ""),
+                "station": m.get("station", ""),
+                "category": m.get("category", ""),
+                "outcomes": m.get("outcomes", []),
+                "active": m.get("active", True),
+                "end_date": m.get("end_date_iso", m.get("resolution_time", "")),
+                "prices": m.get("prices", {}),
+                "tokens": m.get("tokens", []),
+                "confidence": m.get("confidence", 0),
+            })
         _state["weather_markets"] = weather
         _state["last_scan"] = datetime.now(timezone.utc).isoformat()
         _state["scan_count"] += 1
