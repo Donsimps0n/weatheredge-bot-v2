@@ -3,8 +3,8 @@ gamma_client.py
 
 Polymarket Gamma API client for temperature market discovery.
 
-Hits https://gamma-api.polymarket.com/markets, filters to open temperature
-markets, parses each market's rules text to extract station ICAO +
+Hits https://gamma-api.polymarket.com/events, filters to open temperature
+markets from event sub-markets, parses each market's rules text to extract station ICAO +
 resolution time, matches against the 58-city CITIES list, and returns
 dicts in the exact shape that TradingScheduler.run_cycle() expects.
 
@@ -33,7 +33,7 @@ log = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 GAMMA_BASE_URL  = "https://gamma-api.polymarket.com"
-MARKETS_PATH    = "/markets"
+EVENTS_PATH     = "/events"
 PAGE_LIMIT      = 100
 CACHE_TTL_SECONDS = 1800   # 30 min
 
@@ -41,7 +41,8 @@ CACHE_TTL_SECONDS = 1800   # 30 min
 TEMP_KEYWORDS = [
     "temperature", "high temp", "low temp", "high of", "low of",
     "degrees", "fahrenheit", "celsius", "°f", "°c",
-    "weather", "forecast high", "forecast low",
+    "highest temperature", "lowest temperature",
+    "forecast high", "forecast low",
 ]
 
 # Outcome label normalisation → category token
@@ -163,8 +164,8 @@ def _extract_prices(tokens: List[Dict]) -> Dict[str, float]:
     return prices
 
 
-def _fetch_page(session: requests.Session, offset: int, tag: Optional[str]) -> List[Dict]:
-    """Fetch one page of markets from the Gamma API."""
+def _fetch_events_page(session: requests.Session, offset: int, tag: Optional[str]) -> List[Dict]:
+    """Fetch one page of events from the Gamma API and extract sub-markets."""
     params: Dict = {
         "active": "true",
         "closed": "false",
@@ -175,17 +176,28 @@ def _fetch_page(session: requests.Session, offset: int, tag: Optional[str]) -> L
         params["tag_slug"] = tag
 
     resp = session.get(
-        GAMMA_BASE_URL + MARKETS_PATH,
+        GAMMA_BASE_URL + EVENTS_PATH,
         params=params,
         timeout=15,
     )
     resp.raise_for_status()
     data = resp.json()
 
-    # Gamma returns either a list directly or {"markets": [...]}
-    if isinstance(data, list):
-        return data
-    return data.get("markets", data.get("data", []))
+    # Events API returns a list of event objects, each with a "markets" array
+    if not isinstance(data, list):
+        data = data.get("events", data.get("data", []))
+
+    # Flatten: extract all sub-markets from all events
+    all_markets = []
+    for event in data:
+        sub_markets = event.get("markets", [])
+        for m in sub_markets:
+            # Carry event-level info into each sub-market for context
+            if "description" not in m or not m["description"]:
+                m["description"] = event.get("description", "")
+            all_markets.append(m)
+
+    return all_markets
 
 
 def _raw_to_discovered(raw: RawMarket) -> Optional[DiscoveredMarket]:
@@ -255,10 +267,14 @@ def fetch_open_temp_markets(
     max_pages: int = 10,
 ) -> List[DiscoveredMarket]:
     """
-    Hit the Gamma API and return all open temperature markets that:
-    - Match a temperature keyword
+    Hit the Gamma Events API and return all open temperature markets that:
+    - Match a temperature keyword in the question or event title
     - Have an ICAO station in our 58-city list
     - Have a future resolution time
+
+    Markets on Polymarket are grouped under events. The /events endpoint
+    with tag_slug=weather returns weather events, each containing sub-markets
+    with individual temperature questions.
 
     Args:
         tag:       Gamma tag_slug filter (default 'weather'). Pass None to skip.
@@ -276,13 +292,13 @@ def fetch_open_temp_markets(
     for page in range(max_pages):
         offset = page * PAGE_LIMIT
         try:
-            raw_list = _fetch_page(session, offset, tag)
+            raw_list = _fetch_events_page(session, offset, tag)
         except requests.RequestException as exc:
-            log.error("Gamma API error at offset=%d: %s", offset, exc)
+            log.error("Gamma Events API error at offset=%d: %s", offset, exc)
             break
 
         if not raw_list:
-            log.debug("Gamma API: empty page at offset=%d, stopping", offset)
+            log.debug("Gamma Events API: empty page at offset=%d, stopping", offset)
             break
 
         for item in raw_list:
@@ -302,44 +318,51 @@ def fetch_open_temp_markets(
                 clob_ids = item.get("clobTokenIds", [])
                 outcomes  = item.get("outcomes", [])
                 prices_raw = item.get("outcomePrices", [])
+                # clobTokenIds and outcomes may be JSON strings
+                if isinstance(clob_ids, str):
+                    try:
+                        import json as _json
+                        clob_ids = _json.loads(clob_ids)
+                    except Exception:
+                        clob_ids = []
+                if isinstance(outcomes, str):
+                    try:
+                        import json as _json
+                        outcomes = _json.loads(outcomes)
+                    except Exception:
+                        outcomes = []
+                if isinstance(prices_raw, str):
+                    try:
+                        import json as _json
+                        prices_raw = _json.loads(prices_raw)
+                    except Exception:
+                        prices_raw = []
                 tokens = [
                     {
                         "token_id": tid,
-                        "outcome":  outcomes[i] if i < len(outcomes) else str(i),
+                        "outcome":  outcomes[i] if i < len(outcomes) else "?",
                         "price":    prices_raw[i] if i < len(prices_raw) else "0.5",
                     }
                     for i, tid in enumerate(clob_ids)
                 ]
 
             raw = RawMarket(
-                market_id=item.get("conditionId", slug),
+                market_id=item.get("conditionId", item.get("id", slug)),
                 slug=slug,
                 question=question,
-                rules=item.get("description", "") or item.get("rules", ""),
-                end_date_iso=item.get("endDateIso") or item.get("endDate", ""),
+                rules=item.get("description", ""),
+                end_date_iso=item.get("endDateIso", item.get("endDate", "")),
                 tokens=tokens,
-                active=item.get("active", True),
-                closed=item.get("closed", False),
-                volume=float(item.get("volume", 0) or 0),
             )
 
             dm = _raw_to_discovered(raw)
             if dm is not None:
                 discovered.append(dm)
-                log.info(
-                    "discovered: %s | %s (%s) | %s | res=%s",
-                    dm.slug, dm.city, dm.station, dm.category,
-                    dm.resolution_time.strftime("%Y-%m-%d %H:%M UTC"),
-                )
 
-        # If this page was not full, we've reached the end
-        if len(raw_list) < PAGE_LIMIT:
-            break
+        log.info("Gamma Events page %d: %d sub-markets, %d discovered so far",
+                 page, len(raw_list), len(discovered))
 
-    log.info(
-        "Gamma discovery: scanned %d pages, found %d temperature markets",
-        page + 1, len(discovered),
-    )
+    log.info("fetch_open_temp_markets: %d markets discovered from events API", len(discovered))
     return discovered
 
 
