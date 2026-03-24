@@ -182,7 +182,7 @@ def save_config():
     trading_mode = data.get("trading_mode", "paper").strip().lower()
 
     if not proxy_key or not proxy_key.startswith("pk-"):
-        return jsonify({"ok": False, "error": "Invalid proxy key — must start with pk-"}), 400
+        return jsonify({"ok": False, "error": "Invalid proxy key â must start with pk-"}), 400
     if trading_mode not in ("paper", "live"):
         return jsonify({"ok": False, "error": "trading_mode must be paper or live"}), 400
 
@@ -204,7 +204,7 @@ def save_config():
             logger.error("Failed to persist to Railway: %s", exc)
             return jsonify({"ok": True, "warning": "Saved in memory but Railway persist failed"})
     else:
-        logger.warning("RAILWAY_API_TOKEN / SERVICE_ID / ENV_ID not set — saved in memory only")
+        logger.warning("RAILWAY_API_TOKEN / SERVICE_ID / ENV_ID not set â saved in memory only")
 
     return jsonify({"ok": True})
 
@@ -524,8 +524,182 @@ def get_signals():
         return jsonify({"ok": False, "error": str(exc), "signals": []}), 502
 
 
+
+
+# ---------- Polymarket CLOB Trading ----------
+_CLOB_HOST = "https://clob.polymarket.com"
+_POLYGON_CHAIN_ID = 137
+_clob_client = None
+_clob_creds = None
+_trade_log = []
+_MAX_TRADE_LOG = 200
+
+def _init_clob():
+    """Initialize Polymarket CLOB client from env vars."""
+    global _clob_client, _clob_creds
+    pk = os.environ.get("POLYMARKET_PRIVATE_KEY", "")
+    funder = os.environ.get("POLYMARKET_FUNDER_ADDRESS", "")
+    if not pk:
+        logger.warning("POLYMARKET_PRIVATE_KEY not set - trading disabled")
+        return False
+    try:
+        from py_clob_client.client import ClobClient
+        client = ClobClient(
+            host=_CLOB_HOST,
+            chain_id=_POLYGON_CHAIN_ID,
+            key=pk,
+            signature_type=2,  # GNOSIS_SAFE for fresh MetaMask wallet
+            funder=funder if funder else None
+        )
+        creds = client.create_or_derive_api_creds()
+        _clob_creds = creds
+        client.set_api_creds(creds)
+        _clob_client = client
+        logger.info("CLOB client initialized OK - trading enabled")
+        return True
+    except Exception as exc:
+        logger.error("CLOB init failed: %s", exc)
+        return False
+
+
+@app.route("/api/trading/status")
+def trading_status():
+    """Check if CLOB trading is enabled and return wallet info."""
+    pk = os.environ.get("POLYMARKET_PRIVATE_KEY", "")
+    funder = os.environ.get("POLYMARKET_FUNDER_ADDRESS", "")
+    connected = _clob_client is not None
+    return jsonify({
+        "ok": True,
+        "trading_enabled": connected,
+        "has_private_key": bool(pk),
+        "funder_address": funder if funder else None,
+        "credentials_active": _clob_creds is not None,
+        "recent_trades": len(_trade_log),
+    })
+
+
+@app.route("/api/trading/balance")
+def trading_balance():
+    """Get CLOB collateral balance."""
+    if not _clob_client:
+        return jsonify({"ok": False, "error": "Trading not connected"}), 503
+    try:
+        bal = _clob_client.get_balance_allowance()
+        return jsonify({"ok": True, "balance": bal})
+    except Exception as exc:
+        logger.error("Balance check failed: %s", exc)
+        return jsonify({"ok": False, "error": str(exc)}), 502
+
+
+@app.route("/api/trading/place", methods=["POST"])
+def place_trade():
+    """
+    Place a trade on Polymarket CLOB.
+    Body JSON: {token_id, side (BUY/SELL), price, size, tick_size, neg_risk}
+    """
+    if not _clob_client:
+        return jsonify({"ok": False, "error": "Trading not connected"}), 503
+    data = request.get_json(force=True)
+    token_id = data.get("token_id", "")
+    side = data.get("side", "BUY")
+    price = float(data.get("price", 0))
+    size = float(data.get("size", 0))
+    tick_size = data.get("tick_size", "0.01")
+    neg_risk = data.get("neg_risk", False)
+    if not token_id or price <= 0 or size <= 0:
+        return jsonify({"ok": False, "error": "Missing token_id, price, or size"}), 400
+    if price < 0.01 or price > 0.99:
+        return jsonify({"ok": False, "error": "Price must be between 0.01 and 0.99"}), 400
+    if size > 500:
+        return jsonify({"ok": False, "error": "Max size 500 per order (safety limit)"}), 400
+    try:
+        order_args = {
+            "token_id": token_id,
+            "price": price,
+            "size": size,
+            "side": side,
+        }
+        order_opts = {"tick_size": tick_size, "neg_risk": neg_risk}
+        resp = _clob_client.create_and_post_order(order_args, order_opts)
+        trade_entry = {
+            "ts": datetime.now(timezone.utc).isoformat(),
+            "token_id": token_id, "side": side,
+            "price": price, "size": size,
+            "result": str(resp),
+        }
+        _trade_log.append(trade_entry)
+        if len(_trade_log) > _MAX_TRADE_LOG:
+            _trade_log.pop(0)
+        logger.info("Trade placed: %s %s @ %.2f x %.1f", side, token_id[:16], price, size)
+        return jsonify({"ok": True, "order": str(resp), "trade": trade_entry})
+    except Exception as exc:
+        logger.error("Trade failed: %s", exc)
+        err_entry = {
+            "ts": datetime.now(timezone.utc).isoformat(),
+            "token_id": token_id, "side": side,
+            "price": price, "size": size,
+            "error": str(exc),
+        }
+        _trade_log.append(err_entry)
+        return jsonify({"ok": False, "error": str(exc)}), 502
+
+
+@app.route("/api/trading/log")
+def trade_history():
+    """Return recent trade log."""
+    return jsonify({"ok": True, "trades": list(reversed(_trade_log)), "count": len(_trade_log)})
+
+
+@app.route("/api/trading/auto", methods=["POST"])
+def auto_trade_signal():
+    """
+    Auto-trade: takes a signal object and places a trade if EV threshold met.
+    Body JSON: {signal (from /api/signals), max_size, min_ev, min_kelly}
+    """
+    if not _clob_client:
+        return jsonify({"ok": False, "error": "Trading not connected"}), 503
+    data = request.get_json(force=True)
+    sig = data.get("signal", {})
+    max_size = float(data.get("max_size", 10))
+    min_ev = float(data.get("min_ev", 5))
+    min_kelly = float(data.get("min_kelly", 2))
+    if not sig.get("slug"):
+        return jsonify({"ok": False, "error": "No signal slug provided"}), 400
+    ev = abs(sig.get("theo_ev", 0))
+    kelly = sig.get("kelly", 0)
+    if ev < min_ev:
+        return jsonify({"ok": True, "action": "SKIP", "reason": f"EV {ev} below threshold {min_ev}"})
+    if kelly < min_kelly:
+        return jsonify({"ok": True, "action": "SKIP", "reason": f"Kelly {kelly} below threshold {min_kelly}"})
+    sig_type = sig.get("signal", "SKIP")
+    if sig_type == "SKIP":
+        return jsonify({"ok": True, "action": "SKIP", "reason": "Signal is SKIP"})
+    # Determine trade side and price
+    our_prob = sig.get("our_prob", 50) / 100.0
+    mkt_price = sig.get("market_price", 50) / 100.0
+    if sig_type == "BUY YES":
+        side = "BUY"
+        price = round(min(mkt_price + 0.01, our_prob - 0.02), 2)
+    else:  # BUY NO
+        side = "SELL"
+        price = round(max(mkt_price - 0.01, our_prob + 0.02), 2)
+    # Kelly-based sizing, capped at max_size
+    size = round(min(max_size, max_size * (kelly / 100.0) * 2), 1)
+    size = max(1, size)  # minimum 1 unit
+    price = max(0.01, min(0.99, price))
+    logger.info("Auto-trade: %s %s @ %.2f x %.1f (EV=%.1f, Kelly=%.1f)",
+               side, sig.get("slug", "?")[:30], price, size, ev, kelly)
+    return jsonify({
+        "ok": True, "action": "TRADE_READY",
+        "side": side, "price": price, "size": size,
+        "signal": sig_type, "ev": ev, "kelly": kelly,
+        "note": "Call /api/trading/place with token_id to execute"
+    })
+
+
 # ---------- Boot ----------
 _boot = time.time()
+_init_clob()  # attempt CLOB connection on startup
 PORT = int(os.environ.get("PORT", 8080))
 
 if __name__ == "__main__":
