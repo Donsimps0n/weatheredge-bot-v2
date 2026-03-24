@@ -182,7 +182,7 @@ def save_config():
     trading_mode = data.get("trading_mode", "paper").strip().lower()
 
     if not proxy_key or not proxy_key.startswith("pk-"):
-        return jsonify({"ok": False, "error": "Invalid proxy key â must start with pk-"}), 400
+        return jsonify({"ok": False, "error": "Invalid proxy key Ã¢ÂÂ must start with pk-"}), 400
     if trading_mode not in ("paper", "live"):
         return jsonify({"ok": False, "error": "trading_mode must be paper or live"}), 400
 
@@ -204,7 +204,7 @@ def save_config():
             logger.error("Failed to persist to Railway: %s", exc)
             return jsonify({"ok": True, "warning": "Saved in memory but Railway persist failed"})
     else:
-        logger.warning("RAILWAY_API_TOKEN / SERVICE_ID / ENV_ID not set â saved in memory only")
+        logger.warning("RAILWAY_API_TOKEN / SERVICE_ID / ENV_ID not set Ã¢ÂÂ saved in memory only")
 
     return jsonify({"ok": True})
 
@@ -702,6 +702,22 @@ _boot = time.time()
 _init_clob()  # attempt CLOB connection on startup
 PORT = int(os.environ.get("PORT", 8080))
 
+
+def _start_scheduler_thread():
+    """Start the scheduler in a background thread so API server stays responsive."""
+    import threading
+    def _run_scheduler():
+        try:
+            import subprocess
+            subprocess.run(["python", "scheduler.py"])
+        except Exception as exc:
+            logger.error("Scheduler thread failed: %s", exc)
+    t = threading.Thread(target=_run_scheduler, daemon=True)
+    t.start()
+    logger.info("Scheduler started in background thread")
+
+
 if __name__ == "__main__":
     _log(f"WeatherEdge API v2 starting on port {PORT}")
+    _start_scheduler_thread()
     app.run(host="0.0.0.0", port=PORT, debug=False)
