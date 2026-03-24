@@ -31,12 +31,10 @@ CORS(app, origins=[
 
 # ---------- Import bot modules (graceful fallback) ----------
 try:
-    from gamma_client import GammaClient
-    _gamma = GammaClient()
+    from gamma_client import get_markets as _gamma_get_markets
     HAS_GAMMA = True
 except Exception:
     HAS_GAMMA = False
-    _gamma = None
     logger.warning("gamma_client unavailable - /api/markets returns empty")
 
 try:
@@ -120,7 +118,7 @@ def scan():
         return jsonify({"error": "gamma_client not available"}), 503
     try:
         _log("Scan triggered via API")
-        raw = _gamma.get_markets()
+        raw = _gamma_get_markets()
         _state["markets_cache"] = raw
         weather = []
         for m in raw:
@@ -182,7 +180,7 @@ def save_config():
     trading_mode = data.get("trading_mode", "paper").strip().lower()
 
     if not proxy_key or not proxy_key.startswith("pk-"):
-        return jsonify({"ok": False, "error": "Invalid proxy key Ã¢ÂÂ must start with pk-"}), 400
+        return jsonify({"ok": False, "error": "Invalid proxy key ÃÂ¢ÃÂÃÂ must start with pk-"}), 400
     if trading_mode not in ("paper", "live"):
         return jsonify({"ok": False, "error": "trading_mode must be paper or live"}), 400
 
@@ -204,7 +202,7 @@ def save_config():
             logger.error("Failed to persist to Railway: %s", exc)
             return jsonify({"ok": True, "warning": "Saved in memory but Railway persist failed"})
     else:
-        logger.warning("RAILWAY_API_TOKEN / SERVICE_ID / ENV_ID not set Ã¢ÂÂ saved in memory only")
+        logger.warning("RAILWAY_API_TOKEN / SERVICE_ID / ENV_ID not set ÃÂ¢ÃÂÃÂ saved in memory only")
 
     return jsonify({"ok": True})
 
