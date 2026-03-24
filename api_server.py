@@ -242,6 +242,149 @@ def _set_railway_env_vars(variables: dict):
             raise RuntimeError(f"Railway API error: {body['errors']}")
 
 
+
+# ---------- Live Traders from Polymarket Analytics ----------
+_traders_cache = {"data": None, "ts": 0}
+
+@app.route("/api/traders")
+def get_traders():
+    """Proxy top weather traders from Polymarket Analytics, cached 5 min."""
+    import urllib.request
+    import json as _json
+    now = time.time()
+    if _traders_cache["data"] and now - _traders_cache["ts"] < 300:
+        return jsonify(_traders_cache["data"])
+    try:
+        url = (
+            "https://polymarketanalytics.com/api/traders-tag-performance"
+            "?tag=Weather&sortDirection=ASC&limit=20&offset=0&sortColumn=rank"
+            "&minPnL=0&maxPnL=500000"
+            "&minActivePositions=0&maxActivePositions=15000"
+            "&minWinAmount=0&maxWinAmount=500000"
+            "&minLossAmount=-300000&maxLossAmount=0"
+            "&minWinRate=0&maxWinRate=100"
+            "&minCurrentValue=0&maxCurrentValue=200000"
+            "&minTotalPositions=1&maxTotalPositions=30000"
+        )
+        req = urllib.request.Request(url, headers={"User-Agent": "WeatherEdge/2.0"})
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            body = _json.loads(resp.read())
+        rows = body.get("data", body) if isinstance(body, dict) else body
+        traders = []
+        for r in rows[:20]:
+            traders.append({
+                "rank": r.get("rank", 0),
+                "name": r.get("trader_name") or r.get("trader", "")[:10],
+                "address": r.get("trader", ""),
+                "pnl": round(r.get("overall_gain", 0), 2),
+                "wins": round(r.get("win_amount", 0), 2),
+                "losses": round(abs(r.get("loss_amount", 0)), 2),
+                "winRate": round(r.get("win_rate", 0) * 100, 1),
+                "positions": r.get("total_positions", 0),
+                "active": r.get("active_positions", 0),
+            })
+        result = {"ok": True, "traders": traders, "ts": int(now)}
+        _traders_cache["data"] = result
+        _traders_cache["ts"] = now
+        return jsonify(result)
+    except Exception as exc:
+        logger.error("Failed to fetch traders: %s", exc)
+        if _traders_cache["data"]:
+            return jsonify(_traders_cache["data"])
+        return jsonify({"ok": False, "error": str(exc)}), 502
+
+
+# ---------- Live Weather from Open-Meteo ----------
+_weather_cache = {"data": None, "ts": 0}
+
+WEATHER_CITIES = [
+    {"name":"London","country":"UK","lat":51.51,"lon":-0.13},
+    {"name":"Paris","country":"FR","lat":48.86,"lon":2.35},
+    {"name":"Tokyo","country":"JP","lat":35.68,"lon":139.69},
+    {"name":"New York","country":"US","lat":40.71,"lon":-74.01},
+    {"name":"Seoul","country":"KR","lat":37.57,"lon":126.98},
+    {"name":"Sydney","country":"AU","lat":-33.87,"lon":151.21},
+    {"name":"Mumbai","country":"IN","lat":19.08,"lon":72.88},
+    {"name":"Dubai","country":"AE","lat":25.20,"lon":55.27},
+    {"name":"Berlin","country":"DE","lat":52.52,"lon":13.41},
+    {"name":"Moscow","country":"RU","lat":55.76,"lon":37.62},
+    {"name":"Toronto","country":"CA","lat":43.65,"lon":-79.38},
+    {"name":"Chicago","country":"US","lat":41.88,"lon":-87.63},
+    {"name":"Miami","country":"US","lat":25.76,"lon":-80.19},
+    {"name":"Dallas","country":"US","lat":32.78,"lon":-96.80},
+    {"name":"Atlanta","country":"US","lat":33.75,"lon":-84.39},
+    {"name":"Seattle","country":"US","lat":47.61,"lon":-122.33},
+    {"name":"Mexico City","country":"MX","lat":19.43,"lon":-99.13},
+    {"name":"Rome","country":"IT","lat":41.90,"lon":12.50},
+    {"name":"Madrid","country":"ES","lat":40.42,"lon":-3.70},
+    {"name":"Cairo","country":"EG","lat":30.04,"lon":31.24},
+    {"name":"Lagos","country":"NG","lat":6.52,"lon":3.38},
+    {"name":"Nairobi","country":"KE","lat":-1.29,"lon":36.82},
+    {"name":"Johannesburg","country":"ZA","lat":-26.20,"lon":28.05},
+    {"name":"Bangkok","country":"TH","lat":13.76,"lon":100.50},
+    {"name":"Singapore","country":"SG","lat":1.35,"lon":103.82},
+    {"name":"Manila","country":"PH","lat":14.60,"lon":120.98},
+    {"name":"Jakarta","country":"ID","lat":-6.21,"lon":106.85},
+    {"name":"Hong Kong","country":"HK","lat":22.32,"lon":114.17},
+    {"name":"Taipei","country":"TW","lat":25.03,"lon":121.57},
+    {"name":"Denver","country":"US","lat":39.74,"lon":-104.99},
+    {"name":"Phoenix","country":"US","lat":33.45,"lon":-112.07},
+    {"name":"San Francisco","country":"US","lat":37.77,"lon":-122.42},
+    {"name":"Los Angeles","country":"US","lat":34.05,"lon":-118.24},
+    {"name":"Lima","country":"PE","lat":-12.05,"lon":-77.04},
+    {"name":"Buenos Aires","country":"AR","lat":-34.60,"lon":-58.38},
+    {"name":"Oslo","country":"NO","lat":59.91,"lon":10.75},
+]
+
+@app.route("/api/weather")
+def get_weather():
+    """Current weather for tracked cities via Open-Meteo (free, no key)."""
+    import urllib.request
+    import json as _json
+    now = time.time()
+    if _weather_cache["data"] and now - _weather_cache["ts"] < 300:
+        return jsonify(_weather_cache["data"])
+    try:
+        lats = ",".join(str(c["lat"]) for c in WEATHER_CITIES)
+        lons = ",".join(str(c["lon"]) for c in WEATHER_CITIES)
+        url = (
+            f"https://api.open-meteo.com/v1/forecast"
+            f"?latitude={lats}&longitude={lons}"
+            f"&current=temperature_2m,relative_humidity_2m,precipitation,cloud_cover,weather_code"
+            f"&timezone=auto"
+        )
+        req = urllib.request.Request(url, headers={"User-Agent": "WeatherEdge/2.0"})
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            body = _json.loads(resp.read())
+        # Open-Meteo returns a list when multiple coords
+        results = body if isinstance(body, list) else [body]
+        cities = []
+        for i, city in enumerate(WEATHER_CITIES):
+            if i >= len(results):
+                break
+            cur = results[i].get("current", {})
+            cities.append({
+                "name": city["name"],
+                "country": city["country"],
+                "lat": city["lat"],
+                "lon": city["lon"],
+                "temp": cur.get("temperature_2m", 0),
+                "humidity": cur.get("relative_humidity_2m", 0),
+                "precip": cur.get("precipitation", 0),
+                "cloud": cur.get("cloud_cover", 0),
+                "code": cur.get("weather_code", 0),
+            })
+        result = {"ok": True, "cities": cities, "ts": int(now)}
+        _weather_cache["data"] = result
+        _weather_cache["ts"] = now
+        return jsonify(result)
+    except Exception as exc:
+        logger.error("Failed to fetch weather: %s", exc)
+        if _weather_cache["data"]:
+            return jsonify(_weather_cache["data"])
+        return jsonify({"ok": False, "error": str(exc)}), 502
+
+
 # ---------- Boot ----------
 _boot = time.time()
 PORT = int(os.environ.get("PORT", 8080))
