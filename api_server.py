@@ -227,6 +227,13 @@ def scan():
                 "prices": m.get("prices", {}),
                 "tokens": m.get("tokens", []),
                 "confidence": m.get("confidence", 0),
+                # Frontend-compatible edge fields
+                "yes_price": float(m.get("prices", {}).get("Yes", m.get("prices", {}).get("yes", 0)) or 0),
+                "no_price": float(m.get("prices", {}).get("No", m.get("prices", {}).get("no", 0)) or 0),
+                "best_side": "YES" if float(m.get("prices", {}).get("Yes", m.get("prices", {}).get("yes", 50)) or 50) < 50 else "NO",
+                "best_edge": 0,
+                "theoretical_full_ev": 0,
+                "regime": m.get("category", ""),
             })
         _state["weather_markets"] = weather
         _state["last_scan"] = datetime.now(timezone.utc).isoformat()
@@ -237,6 +244,9 @@ def scan():
             "total_markets": len(raw),
             "markets": weather[:50],
             "scan_time": _state["last_scan"],
+            "count": len(weather),
+            "edges": weather[:50],
+            "cache_size": len(raw),
         })
     except Exception as exc:
         _log(f"Scan error: {exc}")
