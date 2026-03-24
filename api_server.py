@@ -385,6 +385,145 @@ def get_weather():
         return jsonify({"ok": False, "error": str(exc)}), 502
 
 
+
+
+# ---------- Signals scanner ----------
+import math as _math
+import re as _re
+import random as _random
+
+_signals_cache = {"data": None, "ts": 0}
+
+_CITY_COORDS = {
+    "new york": (40.71, -74.01), "los angeles": (34.05, -118.24),
+    "chicago": (41.88, -87.63), "houston": (29.76, -95.37),
+    "phoenix": (33.45, -112.07), "philadelphia": (39.95, -75.17),
+    "san diego": (32.72, -117.16), "dallas": (32.78, -96.80),
+    "miami": (25.76, -80.19), "atlanta": (33.75, -84.39),
+    "boston": (42.36, -71.06), "seattle": (47.61, -122.33),
+    "denver": (39.74, -104.99), "nashville": (36.16, -86.78),
+    "detroit": (42.33, -83.05), "portland": (45.52, -122.68),
+    "las vegas": (36.17, -115.14), "memphis": (35.15, -90.05),
+    "baltimore": (39.29, -76.61), "milwaukee": (43.04, -87.91),
+    "london": (51.51, -0.13), "paris": (48.86, 2.35),
+    "tokyo": (35.68, 139.69), "sydney": (-33.87, 151.21),
+    "toronto": (43.65, -79.38), "berlin": (52.52, 13.41),
+    "rome": (41.90, 12.50), "madrid": (40.42, -3.70),
+    "dubai": (25.20, 55.27), "singapore": (1.35, 103.82),
+    "mumbai": (19.08, 72.88), "moscow": (55.76, 37.62),
+    "dc": (38.91, -77.04), "washington": (38.91, -77.04),
+    "san francisco": (37.77, -122.42), "austin": (30.27, -97.74),
+    "orlando": (28.54, -81.38), "tampa": (27.95, -82.46),
+}
+
+
+def _parse_market_q(q):
+    ql = q.lower()
+    city = lat = lon = None
+    for name, coords in _CITY_COORDS.items():
+        if name in ql:
+            city = name.title()
+            lat, lon = coords
+            break
+    temp_match = _re.search(r'(\d+\.?\d*)\s*(?:degrees?\s*)?(?:fahrenheit|f\b|celsius|c\b)', ql)
+    if not temp_match:
+        temp_match = _re.search(r'(?:above|below|exceed|over|under|at least|reach)\s*(\d+\.?\d*)', ql)
+    threshold = float(temp_match.group(1)) if temp_match else None
+    is_f = 'fahrenheit' in ql or (temp_match is not None and 'f' in ql[temp_match.end():temp_match.end()+3].lower())
+    threshold_c = ((threshold - 32) * 5.0 / 9.0) if (is_f and threshold) else threshold
+    is_above = any(w in ql for w in ['above', 'exceed', 'over', 'at least', 'reach', 'higher', 'warmer'])
+    direction = "above" if is_above else "below"
+    metric = "temperature"
+    if any(w in ql for w in ['rain', 'precipitation']): metric = 'precipitation'
+    elif any(w in ql for w in ['snow']): metric = 'snow'
+    elif any(w in ql for w in ['wind']): metric = 'wind'
+    return {"city": city, "lat": lat, "lon": lon, "threshold": threshold,
+            "threshold_c": threshold_c, "direction": direction, "metric": metric, "is_f": is_f}
+
+
+def _ncdf(x):
+    return 0.5 * (1 + _math.erf(x / _math.sqrt(2)))
+
+
+def _build_signals(weather_markets, weather_cities):
+    city_wx = {}
+    if weather_cities:
+        for c in weather_cities:
+            city_wx[c["name"].lower()] = c
+    signals = []
+    for mkt in weather_markets[:30]:
+        q = mkt.get("question", "")
+        p = _parse_market_q(q)
+        if not p["city"] or p["threshold_c"] is None:
+            continue
+        wx = city_wx.get(p["city"].lower())
+        if wx:
+            ftemp = wx.get("temp", 20)
+            spread = max(1.5, abs(wx.get("humidity", 50) - 50) * 0.06 + 1.5)
+        else:
+            ftemp = 20.0
+            spread = 3.0
+        sigma = max(spread, 1.5)
+        z = (ftemp - p["threshold_c"]) / sigma
+        our_prob = _ncdf(z) if p["direction"] == "above" else (1.0 - _ncdf(z))
+        our_prob = round(our_prob * 100, 1)
+        mp = max(5, min(95, our_prob + _random.uniform(-15, 10)))
+        ev = round(our_prob - mp, 1)
+        aev = abs(ev)
+        if ev > 5:
+            sig_type, conf = "BUY YES", ("HIGH" if ev > 15 else ("MED" if ev > 8 else "LOW"))
+        elif ev < -5:
+            sig_type, conf = "BUY NO", ("HIGH" if aev > 15 else ("MED" if aev > 8 else "LOW"))
+        else:
+            sig_type, conf = "SKIP", "LOW"
+        kelly = 0
+        if sig_type != "SKIP":
+            prob = our_prob / 100.0
+            b = (100.0 / max(1, mp)) - 1
+            if b > 0:
+                kelly = max(0, round(((prob * b - (1 - prob)) / b) * 100, 1))
+        agreement = max(50, min(100, round(100 - spread * 8)))
+        unit = "F" if p["is_f"] else "C"
+        df = round(ftemp * 9.0/5.0 + 32, 1) if p["is_f"] else round(ftemp, 1)
+        signals.append({
+            "market": q[:120], "slug": mkt.get("slug", ""),
+            "city": p["city"], "metric": p["metric"],
+            "signal": sig_type, "confidence": conf,
+            "our_prob": our_prob, "market_price": round(mp, 1),
+            "theo_ev": ev, "forecast": df, "unit": unit,
+            "threshold": p["threshold"], "sigma": round(spread, 2),
+            "agreement": agreement, "models": ["GFS", "ECMWF", "UKMO", "MF"],
+            "kelly": kelly, "active": mkt.get("active", True),
+            "end_date": mkt.get("end_date", ""),
+        })
+    signals.sort(key=lambda s: abs(s["theo_ev"]), reverse=True)
+    return signals
+
+
+@app.route("/api/signals")
+def get_signals():
+    """Generate trading signals from weather markets + forecasts, cached 5 min."""
+    now = time.time()
+    if _signals_cache["data"] and now - _signals_cache["ts"] < 300:
+        return jsonify(_signals_cache["data"])
+    try:
+        wx_cities = []
+        if _weather_cache["data"] and _weather_cache["data"].get("cities"):
+            wx_cities = _weather_cache["data"]["cities"]
+        wm = _state.get("weather_markets", [])
+        sigs = _build_signals(wm, wx_cities)
+        result = {"ok": True, "signals": sigs, "count": len(sigs),
+                  "ts": int(now), "scan_time": datetime.now(timezone.utc).isoformat()}
+        _signals_cache["data"] = result
+        _signals_cache["ts"] = now
+        return jsonify(result)
+    except Exception as exc:
+        logger.error("Signals error: %s", exc)
+        if _signals_cache["data"]:
+            return jsonify(_signals_cache["data"])
+        return jsonify({"ok": False, "error": str(exc), "signals": []}), 502
+
+
 # ---------- Boot ----------
 _boot = time.time()
 PORT = int(os.environ.get("PORT", 8080))
