@@ -353,6 +353,9 @@ def fetch_open_temp_markets(
                 rules=item.get("description", ""),
                 end_date_iso=item.get("endDateIso", item.get("endDate", "")),
                 tokens=tokens,
+                active=bool(item.get("active", True)),
+                closed=bool(item.get("closed", False)),
+                volume=float(item.get("volumeNum", item.get("volume", 0)) or 0),
             )
 
             dm = _raw_to_discovered(raw)
