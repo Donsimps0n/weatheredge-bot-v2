@@ -549,8 +549,16 @@ _CITY_COORDS = {
     "dubai": (25.20, 55.27), "singapore": (1.35, 103.82),
     "mumbai": (19.08, 72.88), "moscow": (55.76, 37.62),
     "dc": (38.91, -77.04), "washington": (38.91, -77.04),
-    "san francisco": (37.77, -122.42), "austin": (30.27, -97.74),
-    "orlando": (28.54, -81.38), "tampa": (27.95, -82.46),
+    "seoul": (37.57, 126.98), "beijing": (39.90, 116.41),
+    "ankara": (39.93, 32.86), "buenos aires": (-34.60, -58.38),
+    "sao paulo": (-23.55, -46.63), "são paulo": (-23.55, -46.63),
+    "mexico city": (19.43, -99.13), "cairo": (30.04, 31.24),
+    "johannesburg": (-26.20, 28.05), "hong kong": (22.32, 114.17),
+    "bangkok": (13.76, 100.50), "jakarta": (-6.21, 106.85),
+    "istanbul": (41.01, 28.98), "lima": (-12.05, -77.04),
+    "bogota": (4.71, -74.07), "santiago": (-33.45, -70.67),
+    "lagos": (6.52, 3.38), "nairobi": (-1.29, 36.82),
+    "riyadh": (24.71, 46.67), "tel aviv": (32.09, 34.78),
 }
 
 
@@ -564,21 +572,30 @@ def _parse_market_q(q):
             break
     temp_match = _re.search(r'(\d+\.?\d*)\s*[\xb0]?\s*(?:degrees?\s*)?(?:fahrenheit|f\b|celsius|c\b)', ql)
     if not temp_match:
-        temp_match = _re.search(r'(\d+\.?\d*)\s*[\xb0]?\s*[fFcC]?\s*(?:or\s+)?(?:above|below|exceed|over|under)', ql)
+        temp_match = _re.search(r'(\d+\.?\d*)\s*[\xb0]?\s*[fFcC]?\s*(?:or\s+)?(?:above|below|exceed|over|under|higher|lower)', ql)
         if not temp_match:
             temp_match = _re.search(r'(?:above|below|exceed|over|under|at least|reach)\s*(\d+\.?\d*)', ql)
     threshold = float(temp_match.group(1)) if temp_match else None
     is_f = 'fahrenheit' in ql or (temp_match is not None and 'f' in ql[temp_match.end():temp_match.end()+3].lower())
     threshold_c = ((threshold - 32) * 5.0 / 9.0) if (is_f and threshold) else threshold
     is_above = any(w in ql for w in ['above', 'exceed', 'over', 'at least', 'reach', 'higher', 'warmer'])
-    direction = "above" if is_above else "below"
+    is_below = any(w in ql for w in ['below', 'under', 'lower', 'cooler', 'colder'])
+    # Detect exact temperature questions: "be X°C on" with no above/below
+    is_exact = (not is_above and not is_below and threshold is not None
+                and _re.search(r'be\s+\d+', ql) is not None)
+    if is_exact:
+        direction = "exact"
+    elif is_above:
+        direction = "above"
+    else:
+        direction = "below"
     metric = "temperature"
     if any(w in ql for w in ['rain', 'precipitation']): metric = 'precipitation'
     elif any(w in ql for w in ['snow']): metric = 'snow'
     elif any(w in ql for w in ['wind']): metric = 'wind'
     return {"city": city, "lat": lat, "lon": lon, "threshold": threshold,
-            "threshold_c": threshold_c, "direction": direction, "metric": metric, "is_f": is_f}
-
+            "threshold_c": threshold_c, "direction": direction, "metric": metric,
+            "is_f": is_f, "is_exact": is_exact}
 
 def _ncdf(x):
     return 0.5 * (1 + _math.erf(x / _math.sqrt(2)))
@@ -589,12 +606,30 @@ def _build_signals(weather_markets, weather_cities):
     if weather_cities:
         for c in weather_cities:
             city_wx[c["name"].lower()] = c
-    signals = []
-    for mkt in weather_markets[:30]:
+    # Diversify: round-robin across cities for better coverage
+    by_city = {}
+    for mkt in weather_markets:
         q = mkt.get("question", "")
         p = _parse_market_q(q)
         if not p["city"] or p["threshold_c"] is None:
             continue
+        by_city.setdefault(p["city"].lower(), []).append((mkt, p))
+    diverse = []
+    idx = 0
+    cities = sorted(by_city.keys())
+    while len(diverse) < min(60, sum(len(v) for v in by_city.values())):
+        added = False
+        for c in cities:
+            if idx < len(by_city[c]):
+                diverse.append(by_city[c][idx])
+                added = True
+            if len(diverse) >= 60:
+                break
+        if not added:
+            break
+        idx += 1
+    signals = []
+    for mkt, p in diverse:
         wx = city_wx.get(p["city"].lower())
         if wx:
             ftemp = wx.get("temp", 20)
@@ -603,9 +638,18 @@ def _build_signals(weather_markets, weather_cities):
             ftemp = 20.0
             spread = 3.0
         sigma = max(spread, 1.5)
-        z = (ftemp - p["threshold_c"]) / sigma
-        our_prob = _ncdf(z) if p["direction"] == "above" else (1.0 - _ncdf(z))
-        our_prob = round(our_prob * 100, 1)
+        if p["direction"] == "exact":
+            # Exact temp: probability of landing within +/- 0.5C of threshold
+            z_hi = (p["threshold_c"] + 0.5 - ftemp) / sigma
+            z_lo = (p["threshold_c"] - 0.5 - ftemp) / sigma
+            our_prob = round((_ncdf(z_hi) - _ncdf(z_lo)) * 100, 1)
+        elif p["direction"] == "above":
+            z = (ftemp - p["threshold_c"]) / sigma
+            our_prob = round(_ncdf(z) * 100, 1)
+        else:
+            z = (p["threshold_c"] - ftemp) / sigma
+            our_prob = round(_ncdf(z) * 100, 1)
+        our_prob = max(0.1, min(99.9, our_prob))
         # Use real market price from tokens
         _tkns = mkt.get('tokens', [])
         _yes_mp = 0
@@ -615,24 +659,15 @@ def _build_signals(weather_markets, weather_cities):
                 break
         mp = round(_yes_mp * 100, 1) if _yes_mp > 0 else max(5, min(95, our_prob))
         ev = round(our_prob - mp, 1)
-        aev = abs(ev)
-        if ev > 5:
-            sig_type, conf = "BUY YES", ("HIGH" if ev > 15 else ("MED" if ev > 8 else "LOW"))
-        elif ev < -5:
-            sig_type, conf = "BUY NO", ("HIGH" if aev > 15 else ("MED" if aev > 8 else "LOW"))
-        else:
-            sig_type, conf = "SKIP", "LOW"
-        kelly = 0
-        if sig_type != "SKIP":
-            prob = our_prob / 100.0
-            b = (100.0 / max(1, mp)) - 1
-            if b > 0:
-                kelly = max(0, round(((prob * b - (1 - prob)) / b) * 100, 1))
-        agreement = max(50, min(100, round(100 - spread * 8)))
-        unit = "F" if p["is_f"] else "C"
-        df = round(ftemp * 9.0/5.0 + 32, 1) if p["is_f"] else round(ftemp, 1)
+        is_f = p.get("is_f", False)
+        df = round(ftemp * 9 / 5 + 32, 1) if is_f else round(ftemp, 1)
+        unit = "F" if is_f else "C"
+        kelly = round(max(0, (our_prob / 100 * (100 / max(0.1, mp)) - 1) / ((100 / max(0.1, mp)) - 1) * 100), 1) if mp > 0 else 0
+        conf = min(5, max(1, int(abs(ev) / 10) + 1))
+        agreement = "STRONG" if abs(ev) > 20 else "MODERATE" if abs(ev) > 10 else "WEAK"
+        sig_type = "SKIP" if abs(ev) < 5 else ("BUY YES" if ev > 0 else "BUY NO")
         signals.append({
-            "market": q[:120], "slug": mkt.get("slug", ""),
+            "question": mkt.get("question", ""),
             "city": p["city"], "metric": p["metric"],
             "signal": sig_type, "confidence": conf,
             "our_prob": our_prob, "market_price": round(mp, 1),
@@ -641,10 +676,10 @@ def _build_signals(weather_markets, weather_cities):
             "agreement": agreement, "models": ["GFS", "ECMWF", "UKMO", "MF"],
             "kelly": kelly, "active": mkt.get("active", True),
             "end_date": mkt.get("end_date", ""),
+            "direction": p["direction"],
         })
     signals.sort(key=lambda s: abs(s["theo_ev"]), reverse=True)
     return signals
-
 
 @app.route("/api/signals")
 def get_signals():
