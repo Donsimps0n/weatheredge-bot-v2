@@ -985,7 +985,7 @@ def _run_auto_trade_cycle():
                      and s.get("tokens")]
         tradeable.sort(key=lambda s: s["theo_ev"], reverse=True)
         traded = 0
-        for sig in tradeable[:cfg["max_trades_per_cycle"]]:
+        for sig in tradeable:
             tokens = sig.get("tokens", [])
             sig_type = sig["signal"]
             # Find the right token
@@ -1035,6 +1035,8 @@ def _run_auto_trade_cycle():
                     _trade_log[:] = _trade_log[-_MAX_TRADE_LOG:]
                 logger.info("PAPER TRADE: %s %s @ %.2f x %.1f (EV=%.1f)", sig_type, sig.get("city",""), price, size, sig.get("theo_ev",0))
                 traded += 1
+                if traded >= cfg["max_trades_per_cycle"]:
+                    break
             else:
                 # LIVE trading
                 if not _clob_client:
@@ -1059,6 +1061,8 @@ def _run_auto_trade_cycle():
                         _trade_log[:] = _trade_log[-_MAX_TRADE_LOG:]
                     logger.info("LIVE TRADE: %s %s @ %.2f x %.1f => %s", sig_type, sig.get("city",""), price, size, str(resp)[:100])
                     traded += 1
+                    if traded >= cfg["max_trades_per_cycle"]:
+                        break
                 except Exception as exc:
                     logger.error("Trade failed for %s: %s", sig.get("city",""), exc)
                     trade_info["mode"] = "FAILED"
