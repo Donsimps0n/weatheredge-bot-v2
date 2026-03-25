@@ -202,7 +202,7 @@ def debug_gamma():
     
     return jsonify(results)
 
-@app.route("/api/scan", methods=["POST"])
+@app.route("/api/scan", methods=["GET", "POST"])
 def scan():
     """Fetch markets from Gamma, classify weather ones, cache results."""
     if not HAS_GAMMA:
@@ -215,6 +215,17 @@ def scan():
         # so no need to re-filter with classify_market()
         weather = []
         for m in raw:
+            # Extract yes/no prices from tokens array
+            _tokens = m.get("tokens", [])
+            _yes_p = 0.0
+            _no_p = 0.0
+            for _t in _tokens:
+                _out = str(_t.get("outcome", "")).lower()
+                _pr = float(_t.get("price", 0) or 0)
+                if _out == "yes":
+                    _yes_p = _pr
+                elif _out == "no":
+                    _no_p = _pr
             weather.append({
                 "slug": m.get("slug", ""),
                 "question": m.get("question", m.get("category", "")),
@@ -225,13 +236,13 @@ def scan():
                 "active": m.get("active", True),
                 "end_date": m.get("end_date_iso", m.get("resolution_time", "")),
                 "prices": m.get("prices", {}),
-                "tokens": m.get("tokens", []),
+                "tokens": _tokens,
                 "confidence": m.get("confidence", 0),
-                # Frontend-compatible edge fields
-                "yes_price": float(m.get("prices", {}).get("Yes", m.get("prices", {}).get("yes", 0)) or 0),
-                "no_price": float(m.get("prices", {}).get("No", m.get("prices", {}).get("no", 0)) or 0),
-                "best_side": "YES" if float(m.get("prices", {}).get("Yes", m.get("prices", {}).get("yes", 50)) or 50) < 50 else "NO",
-                "best_edge": 0,
+                # Frontend-compatible edge fields (from tokens array)
+                "yes_price": _yes_p,
+                "no_price": _no_p,
+                "best_side": "YES" if _yes_p < _no_p else "NO",
+                "best_edge": abs(_yes_p - _no_p) if (_yes_p + _no_p) > 0 else 0,
                 "theoretical_full_ev": 0,
                 "regime": m.get("category", ""),
             })
@@ -308,7 +319,7 @@ def save_config():
     trading_mode = data.get("trading_mode", "paper").strip().lower()
 
     if not proxy_key or not proxy_key.startswith("pk-"):
-        return jsonify({"ok": False, "error": "Invalid proxy key ÃÂÃÂÃÂÃÂ¢ÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂ must start with pk-"}), 400
+        return jsonify({"ok": False, "error": "Invalid proxy key ÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂ¢ÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂ must start with pk-"}), 400
     if trading_mode not in ("paper", "live"):
         return jsonify({"ok": False, "error": "trading_mode must be paper or live"}), 400
 
@@ -330,7 +341,7 @@ def save_config():
             logger.error("Failed to persist to Railway: %s", exc)
             return jsonify({"ok": True, "warning": "Saved in memory but Railway persist failed"})
     else:
-        logger.warning("RAILWAY_API_TOKEN / SERVICE_ID / ENV_ID not set ÃÂÃÂÃÂÃÂ¢ÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂ saved in memory only")
+        logger.warning("RAILWAY_API_TOKEN / SERVICE_ID / ENV_ID not set ÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂ¢ÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂ saved in memory only")
 
     return jsonify({"ok": True})
 
