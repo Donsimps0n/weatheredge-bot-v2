@@ -969,7 +969,9 @@ def _run_auto_trade_cycle():
     if not _auto_trade_active:
         return
     try:
-        sigs = _build_signals()
+        wm = _state.get("weather_markets", [])
+        wx_cities = _weather_cache["data"].get("cities", []) if _weather_cache["data"] else []
+        sigs = _build_signals(wm, wx_cities)
         if not sigs:
             logger.info("Auto-trade: no signals")
             return
