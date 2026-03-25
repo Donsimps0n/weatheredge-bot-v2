@@ -576,7 +576,7 @@ def _parse_market_q(q):
         if not temp_match:
             temp_match = _re.search(r'(?:above|below|exceed|over|under|at least|reach)\s*(\d+\.?\d*)', ql)
     threshold = float(temp_match.group(1)) if temp_match else None
-    is_f = 'fahrenheit' in ql or (temp_match is not None and 'f' in ql[temp_match.end():temp_match.end()+3].lower())
+    is_f = 'fahrenheit' in ql or '\xb0f' in ql or (temp_match is not None and ql[temp_match.end()-1:temp_match.end()] == 'f')
     threshold_c = ((threshold - 32) * 5.0 / 9.0) if (is_f and threshold) else threshold
     is_above = any(w in ql for w in ['above', 'exceed', 'over', 'at least', 'reach', 'higher', 'warmer'])
     is_below = any(w in ql for w in ['below', 'under', 'lower', 'cooler', 'colder'])
