@@ -1005,8 +1005,9 @@ def _run_auto_trade_cycle():
             price = max(0.01, min(0.99, price))
             # Size = dollars to spend / price = number of shares
             # Polymarket min order is $1, so ensure size * price >= 1
+            import math
             spend = max(1.0, cfg["max_size"])  # at least $1
-            size = round(spend / price, 0)
+            size = math.ceil(spend / price)
             size = max(1, size)
             trade_info = {
                 "ts": datetime.now(timezone.utc).isoformat(),
