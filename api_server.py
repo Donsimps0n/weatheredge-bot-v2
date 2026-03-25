@@ -776,6 +776,7 @@ def _init_clob():
         return False
     try:
         from py_clob_client.client import ClobClient
+        from py_clob_client.clob_types import OrderArgs
         client = ClobClient(
             host=_CLOB_HOST,
             chain_id=_POLYGON_CHAIN_ID,
@@ -1033,16 +1034,15 @@ def _run_auto_trade_cycle():
                     logger.warning("Auto-trade: CLOB client not connected, skipping")
                     continue
                 try:
-                    side = "BUY" if sig_type == "BUY YES" else "BUY"
-                    order_args = {
-                        "token_id": token_id,
-                        "price": price,
-                        "size": size,
-                        "side": side,
-                    }
-                    tick_size = "0.01"
-                    neg_risk = True
-                    resp = _clob_client.create_and_post_order(order_args, {"tick_size": tick_size, "neg_risk": neg_risk})
+                    from py_clob_client.order_builder.constants import BUY
+                    from py_clob_client.clob_types import OrderArgs
+                    order_args = OrderArgs(
+                        price=price,
+                        size=size,
+                        side=BUY,
+                        token_id=token_id,
+                    )
+                    resp = _clob_client.create_and_post_order(order_args)
                     trade_info["mode"] = "LIVE"
                     trade_info["response"] = str(resp)[:200]
                     trade_info["token_id"] = token_id
