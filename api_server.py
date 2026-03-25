@@ -319,7 +319,7 @@ def save_config():
     trading_mode = data.get("trading_mode", "paper").strip().lower()
 
     if not proxy_key or not proxy_key.startswith("pk-"):
-        return jsonify({"ok": False, "error": "Invalid proxy key ÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂ¢ÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂ must start with pk-"}), 400
+        return jsonify({"ok": False, "error": "Invalid proxy key ÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂ¢ÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂ must start with pk-"}), 400
     if trading_mode not in ("paper", "live"):
         return jsonify({"ok": False, "error": "trading_mode must be paper or live"}), 400
 
@@ -341,7 +341,7 @@ def save_config():
             logger.error("Failed to persist to Railway: %s", exc)
             return jsonify({"ok": True, "warning": "Saved in memory but Railway persist failed"})
     else:
-        logger.warning("RAILWAY_API_TOKEN / SERVICE_ID / ENV_ID not set ÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂ¢ÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂ saved in memory only")
+        logger.warning("RAILWAY_API_TOKEN / SERVICE_ID / ENV_ID not set ÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂ¢ÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂ saved in memory only")
 
     return jsonify({"ok": True})
 
@@ -562,9 +562,11 @@ def _parse_market_q(q):
             city = name.title()
             lat, lon = coords
             break
-    temp_match = _re.search(r'(\d+\.?\d*)\s*(?:degrees?\s*)?(?:fahrenheit|f\b|celsius|c\b)', ql)
+    temp_match = _re.search(r'(\d+\.?\d*)\s*[\xb0]?\s*(?:degrees?\s*)?(?:fahrenheit|f\b|celsius|c\b)', ql)
     if not temp_match:
-        temp_match = _re.search(r'(?:above|below|exceed|over|under|at least|reach)\s*(\d+\.?\d*)', ql)
+        temp_match = _re.search(r'(\d+\.?\d*)\s*[\xb0]?\s*[fFcC]?\s*(?:or\s+)?(?:above|below|exceed|over|under)', ql)
+        if not temp_match:
+            temp_match = _re.search(r'(?:above|below|exceed|over|under|at least|reach)\s*(\d+\.?\d*)', ql)
     threshold = float(temp_match.group(1)) if temp_match else None
     is_f = 'fahrenheit' in ql or (temp_match is not None and 'f' in ql[temp_match.end():temp_match.end()+3].lower())
     threshold_c = ((threshold - 32) * 5.0 / 9.0) if (is_f and threshold) else threshold
@@ -604,7 +606,14 @@ def _build_signals(weather_markets, weather_cities):
         z = (ftemp - p["threshold_c"]) / sigma
         our_prob = _ncdf(z) if p["direction"] == "above" else (1.0 - _ncdf(z))
         our_prob = round(our_prob * 100, 1)
-        mp = max(5, min(95, our_prob + _random.uniform(-15, 10)))
+        # Use real market price from tokens
+        _tkns = mkt.get('tokens', [])
+        _yes_mp = 0
+        for _tk in _tkns:
+            if str(_tk.get('outcome', '')).lower() == 'yes':
+                _yes_mp = float(_tk.get('price', 0) or 0)
+                break
+        mp = round(_yes_mp * 100, 1) if _yes_mp > 0 else max(5, min(95, our_prob))
         ev = round(our_prob - mp, 1)
         aev = abs(ev)
         if ev > 5:
