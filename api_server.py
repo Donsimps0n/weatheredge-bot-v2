@@ -736,7 +736,7 @@ def _build_signals(weather_markets, weather_cities):
 def get_signals():
     """Generate trading signals from weather markets + forecasts, cached 5 min."""
     now = time.time()
-    if _signals_cache["data"] and now - _signals_cache["ts"] < 300:
+    if _signals_cache["data"] and now - _signals_cache["ts"] < 55:
         return jsonify(_signals_cache["data"])
     try:
         wx_cities = []
@@ -1071,10 +1071,10 @@ def _start_auto_trade_timer():
         while True:
             if _auto_trade_active:
                 _run_auto_trade_cycle()
-            time.sleep(300)  # 5 minutes
+            time.sleep(60)  # 1 minute
     t = threading.Thread(target=_loop, daemon=True)
     t.start()
-    logger.info("Auto-trade timer started (every 5 min)")
+    logger.info("Auto-trade timer started (every 1 min)")
 
 
 @app.route("/api/bot/start", methods=["POST"])
