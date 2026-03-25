@@ -697,7 +697,7 @@ def _build_signals(weather_markets, weather_cities):
             "signal": sig_type, "confidence": conf,
             "our_prob": our_prob, "market_price": round(mp, 1),
             "theo_ev": ev, "forecast": df, "unit": unit,
-            "threshold": p["threshold"], "sigma": round(spread, 2),
+            "threshold": p["threshold"], "sigma": round(sigma, 2),
             "agreement": agreement, "models": ["GFS", "ECMWF", "UKMO", "MF"],
             "kelly": kelly, "active": mkt.get("active", True),
             "end_date": mkt.get("end_date", ""),
