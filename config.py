@@ -95,7 +95,7 @@ CITIES: List[Dict[str, any]] = [
     {"city": "Auckland", "icao": "NZAA", "lat": -37.0082, "lon": 174.7850, "coastal": True, "country": "New Zealand", "timezone": "Pacific/Auckland"},
 
     # South America
-    {"city": "São Paulo", "icao": "SBGR", "lat": -23.5505, "lon": -46.6333, "coastal": False, "country": "Brazil", "timezone": "America/Sao_Paulo"},
+    {"city": "SÃ£o Paulo", "icao": "SBGR", "lat": -23.5505, "lon": -46.6333, "coastal": False, "country": "Brazil", "timezone": "America/Sao_Paulo"},
     {"city": "Rio de Janeiro", "icao": "SBGL", "lat": -22.9068, "lon": -43.1729, "coastal": True, "country": "Brazil", "timezone": "America/Sao_Paulo"},
     {"city": "Buenos Aires", "icao": "SAEZ", "lat": -34.6037, "lon": -58.3816, "coastal": True, "country": "Argentina", "timezone": "America/Argentina/Buenos_Aires"},
     {"city": "Santiago", "icao": "SCEL", "lat": -33.4489, "lon": -70.6693, "coastal": False, "country": "Chile", "timezone": "America/Santiago"},
@@ -136,7 +136,7 @@ HALF_LIFE_COASTAL = 3.0
 AR1_RHO_DEFAULT = 0.78
 AR1_RHO_COASTAL = 0.70
 MONTE_CARLO_SAMPLES = 5000
-OBS_ANOMALY_TEMP_THRESHOLD = 6.0  # °C
+OBS_ANOMALY_TEMP_THRESHOLD = 6.0  # Â°C
 OBS_ANOMALY_TIME_THRESHOLD = 45  # minutes
 OBS_SIGMA_WIDEN_FACTOR = 1.4
 
@@ -222,7 +222,7 @@ class APIConfig:
     wu_api_key: str = field(default_factory=lambda: os.environ.get("WU_API_KEY", ""))
     telegram_bot_token: str = field(default_factory=lambda: os.environ.get("TELEGRAM_BOT_TOKEN", ""))
     anthropic_api_key: str = field(default_factory=lambda: os.environ.get("ANTHROPIC_API_KEY", ""))
-    wallet_address: str = "0xA3F0466e37837dEF4588564B9c04100de9Df9136"
+    wallet_address: str = "0xE2FB305bE360286808e5ffa2923B70d9014a37BE"
     paper_mode: bool = True
     db_path: str = "ledger.db"
 
