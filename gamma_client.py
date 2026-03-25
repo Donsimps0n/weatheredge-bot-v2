@@ -40,14 +40,14 @@ CACHE_TTL_SECONDS = 1800   # 30 min
 # Keywords that identify a temperature market in the question text
 TEMP_KEYWORDS = [
     "temperature", "high temp", "low temp", "high of", "low of",
-    "degrees", "fahrenheit", "celsius", "°f", "°c",
+    "degrees", "fahrenheit", "celsius", "Â°f", "Â°c",
     "highest temperature", "lowest temperature",
     "forecast high", "forecast low",
 ]
 
-# Outcome label normalisation → category token
+# Outcome label normalisation â category token
 CATEGORY_MAP = {
-    # High-temp bins look like "Above 90°F", "80–89°F", etc.
+    # High-temp bins look like "Above 90Â°F", "80â89Â°F", etc.
     "high": "high_temp",
     "low":  "low_temp",
     "max":  "high_temp",
@@ -78,17 +78,18 @@ class DiscoveredMarket:
     """Enriched market dict ready for TradingScheduler.run_cycle()."""
     slug:            str
     market_id:       str
+    question:        str              # Original Gamma question text
     station:         str              # ICAO
     city:            str
     country:         str
     category:        str              # "high_temp" | "low_temp"
-    confidence:      int              # 0–3
+    confidence:      int              # 0â3
     timezone:        str
     lat:             float
     lon:             float
     coastal:         bool
     resolution_time: datetime
-    prices:          Dict[str, float] # token_id → current price (0–1)
+    prices:          Dict[str, float] # token_id â current price (0â1)
     tokens:          List[Dict]
     wu_data:         Optional[Dict]   = None
     metar_data:      Optional[Dict]   = None
@@ -135,7 +136,7 @@ def _match_city(icao: str) -> Optional[Dict]:
 
 
 def _parse_resolution_time(end_date_iso: str) -> Optional[datetime]:
-    """Parse ISO-8601 string → UTC datetime. Returns None on failure."""
+    """Parse ISO-8601 string â UTC datetime. Returns None on failure."""
     try:
         # Strip trailing Z and reattach +00:00 for fromisoformat compat
         s = end_date_iso.replace("Z", "+00:00")
@@ -243,6 +244,7 @@ def _raw_to_discovered(raw: RawMarket) -> Optional[DiscoveredMarket]:
     return DiscoveredMarket(
         slug=raw.slug,
         market_id=raw.market_id,
+        question=raw.question,
         station=station_result.icao,
         city=city_entry["city"],
         country=city_entry["country"],
@@ -311,7 +313,7 @@ def fetch_open_temp_markets(
             if not _is_temp_market(question):
                 continue
 
-            # Parse tokens — Gamma nests them differently across versions
+            # Parse tokens â Gamma nests them differently across versions
             tokens = item.get("tokens", [])
             if not tokens:
                 # Some Gamma responses put token IDs in clobTokenIds
@@ -377,6 +379,7 @@ def as_cycle_dict(dm: DiscoveredMarket) -> Dict:
     return {
         "slug":            dm.slug,
         "market_id":       dm.market_id,
+        "question":        dm.question,
         "station":         dm.station,
         "city":            dm.city,
         "country":         dm.country,
