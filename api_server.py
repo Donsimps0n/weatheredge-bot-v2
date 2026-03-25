@@ -962,6 +962,7 @@ _auto_trade_config = {
     "paper_mode": True,   # Start in paper mode for safety
 }
 _paper_trades = []
+_traded_tokens = set()  # Track token_ids we already have orders on
 
 def _run_auto_trade_cycle():
     """Execute one auto-trade cycle: get signals, filter, place orders."""
@@ -996,6 +997,8 @@ def _run_auto_trade_cycle():
                     break
             if not token_id:
                 continue
+            if token_id in _traded_tokens:
+                continue  # Already have an order on this token
             our_prob = sig.get("our_prob", 50) / 100.0
             mkt_price = sig.get("market_price", 50) / 100.0
             if sig_type == "BUY YES":
@@ -1023,6 +1026,7 @@ def _run_auto_trade_cycle():
             }
             if cfg["paper_mode"]:
                 trade_info["mode"] = "PAPER"
+                _traded_tokens.add(token_id)
                 _paper_trades.append(trade_info)
                 if len(_paper_trades) > 200:
                     _paper_trades = _paper_trades[-200:]
@@ -1049,6 +1053,7 @@ def _run_auto_trade_cycle():
                     trade_info["mode"] = "LIVE"
                     trade_info["response"] = str(resp)[:200]
                     trade_info["token_id"] = token_id
+                    _traded_tokens.add(token_id)
                     _trade_log.append(trade_info)
                     if len(_trade_log) > _MAX_TRADE_LOG:
                         _trade_log[:] = _trade_log[-_MAX_TRADE_LOG:]
