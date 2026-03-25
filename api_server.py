@@ -487,7 +487,7 @@ def get_weather():
         url = (
             f"https://api.open-meteo.com/v1/forecast"
             f"?latitude={lats}&longitude={lons}"
-            f"&current=temperature_2m,relative_humidity_2m,precipitation,cloud_cover,weather_code"
+            f"&current=temperature_2m,relative_humidity_2m,precipitation,cloud_cover,weather_code&daily=temperature_2m_max,temperature_2m_min&forecast_days=3&timezone=auto"
             f"&timezone=auto"
         )
         req = urllib.request.Request(url, headers={"User-Agent": "WeatherEdge/2.0"})
@@ -500,12 +500,22 @@ def get_weather():
             if i >= len(results):
                 break
             cur = results[i].get("current", {})
+            daily = results[i].get("daily", {})
+            tmax_list = daily.get("temperature_2m_max", [])
+            tmin_list = daily.get("temperature_2m_min", [])
+            # Index 0 = today, 1 = tomorrow
+            temp_max_today = tmax_list[0] if tmax_list else None
+            temp_min_today = tmin_list[0] if tmin_list else None
+            temp_max_tomorrow = tmax_list[1] if len(tmax_list) > 1 else temp_max_today
             cities.append({
                 "name": city["name"],
                 "country": city["country"],
                 "lat": city["lat"],
                 "lon": city["lon"],
                 "temp": cur.get("temperature_2m", 0),
+                "temp_max": temp_max_today,
+                "temp_min": temp_min_today,
+                "temp_max_tomorrow": temp_max_tomorrow,
                 "humidity": cur.get("relative_humidity_2m", 0),
                 "precip": cur.get("precipitation", 0),
                 "cloud": cur.get("cloud_cover", 0),
@@ -631,13 +641,28 @@ def _build_signals(weather_markets, weather_cities):
     signals = []
     for mkt, p in diverse:
         wx = city_wx.get(p["city"].lower())
+        # Determine if market is for today or tomorrow
+        _q_lower = mkt.get("question", "").lower()
+        _today = datetime.now(timezone.utc)
+        _is_tomorrow = False
+        _dm = _re.search(r'(?:march|april|may|june|july|aug|sep|oct|nov|dec|jan|feb)\s+(\d+)', _q_lower)
+        if _dm:
+            _qday = int(_dm.group(1))
+            _is_tomorrow = _qday != _today.day
         if wx:
-            ftemp = wx.get("temp", 20)
-            spread = max(1.5, abs(wx.get("humidity", 50) - 50) * 0.06 + 1.5)
+            # Use forecasted daily HIGH, not current temp
+            if _is_tomorrow and wx.get("temp_max_tomorrow") is not None:
+                ftemp = wx["temp_max_tomorrow"]
+                sigma = 2.0  # tomorrow forecast: ~2°C uncertainty
+            elif wx.get("temp_max") is not None:
+                ftemp = wx["temp_max"]
+                sigma = 1.5  # today forecast: ~1.5°C uncertainty
+            else:
+                ftemp = wx.get("temp", 20)
+                sigma = 3.0
         else:
             ftemp = 20.0
-            spread = 3.0
-        sigma = max(spread, 1.5)
+            sigma = 3.5
         if p["direction"] == "exact":
             # Exact temp: probability of landing within +/- 0.5C of threshold
             z_hi = (p["threshold_c"] + 0.5 - ftemp) / sigma
@@ -660,7 +685,7 @@ def _build_signals(weather_markets, weather_cities):
         mp = round(_yes_mp * 100, 1) if _yes_mp > 0 else max(5, min(95, our_prob))
         ev = round(our_prob - mp, 1)
         is_f = p.get("is_f", False)
-        df = round(ftemp * 9 / 5 + 32, 1) if is_f else round(ftemp, 1)
+        df = round(ftemp * 9 / 5 + 32, 1) if p.get("is_f") else round(ftemp, 1)
         unit = "F" if is_f else "C"
         kelly = round(max(0, (our_prob / 100 * (100 / max(0.1, mp)) - 1) / ((100 / max(0.1, mp)) - 1) * 100), 1) if mp > 0 else 0
         conf = min(5, max(1, int(abs(ev) / 10) + 1))
