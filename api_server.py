@@ -319,7 +319,7 @@ def save_config():
     trading_mode = data.get("trading_mode", "paper").strip().lower()
 
     if not proxy_key or not proxy_key.startswith("pk-"):
-        return jsonify({"ok": False, "error": "Invalid proxy key ÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂ¢ÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂ must start with pk-"}), 400
+        return jsonify({"ok": False, "error": "Invalid proxy key ÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂ¢ÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂ must start with pk-"}), 400
     if trading_mode not in ("paper", "live"):
         return jsonify({"ok": False, "error": "trading_mode must be paper or live"}), 400
 
@@ -341,7 +341,7 @@ def save_config():
             logger.error("Failed to persist to Railway: %s", exc)
             return jsonify({"ok": True, "warning": "Saved in memory but Railway persist failed"})
     else:
-        logger.warning("RAILWAY_API_TOKEN / SERVICE_ID / ENV_ID not set ÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂ¢ÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂ saved in memory only")
+        logger.warning("RAILWAY_API_TOKEN / SERVICE_ID / ENV_ID not set ÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂ¢ÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂ saved in memory only")
 
     return jsonify({"ok": True})
 
@@ -488,7 +488,6 @@ def get_weather():
             f"https://api.open-meteo.com/v1/forecast"
             f"?latitude={lats}&longitude={lons}"
             f"&current=temperature_2m,relative_humidity_2m,precipitation,cloud_cover,weather_code&daily=temperature_2m_max,temperature_2m_min&forecast_days=3&timezone=auto"
-            f"&timezone=auto"
         )
         req = urllib.request.Request(url, headers={"User-Agent": "WeatherEdge/2.0"})
         with urllib.request.urlopen(req, timeout=15) as resp:
@@ -561,7 +560,7 @@ _CITY_COORDS = {
     "dc": (38.91, -77.04), "washington": (38.91, -77.04),
     "seoul": (37.57, 126.98), "beijing": (39.90, 116.41),
     "ankara": (39.93, 32.86), "buenos aires": (-34.60, -58.38),
-    "sao paulo": (-23.55, -46.63), "são paulo": (-23.55, -46.63),
+    "sao paulo": (-23.55, -46.63), "sÃ£o paulo": (-23.55, -46.63),
     "mexico city": (19.43, -99.13), "cairo": (30.04, 31.24),
     "johannesburg": (-26.20, 28.05), "hong kong": (22.32, 114.17),
     "bangkok": (13.76, 100.50), "jakarta": (-6.21, 106.85),
@@ -590,7 +589,7 @@ def _parse_market_q(q):
     threshold_c = ((threshold - 32) * 5.0 / 9.0) if (is_f and threshold) else threshold
     is_above = any(w in ql for w in ['above', 'exceed', 'over', 'at least', 'reach', 'higher', 'warmer'])
     is_below = any(w in ql for w in ['below', 'under', 'lower', 'cooler', 'colder'])
-    # Detect exact temperature questions: "be X°C on" with no above/below
+    # Detect exact temperature questions: "be XÂ°C on" with no above/below
     is_exact = (not is_above and not is_below and threshold is not None
                 and _re.search(r'be\s+\d+', ql) is not None)
     if is_exact:
@@ -653,10 +652,10 @@ def _build_signals(weather_markets, weather_cities):
             # Use forecasted daily HIGH, not current temp
             if _is_tomorrow and wx.get("temp_max_tomorrow") is not None:
                 ftemp = wx["temp_max_tomorrow"]
-                sigma = 2.0  # tomorrow forecast: ~2°C uncertainty
+                sigma = 2.0  # tomorrow forecast: ~2Â°C uncertainty
             elif wx.get("temp_max") is not None:
                 ftemp = wx["temp_max"]
-                sigma = 1.5  # today forecast: ~1.5°C uncertainty
+                sigma = 1.5  # today forecast: ~1.5Â°C uncertainty
             else:
                 ftemp = wx.get("temp", 20)
                 sigma = 3.0
