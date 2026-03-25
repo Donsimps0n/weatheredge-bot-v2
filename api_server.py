@@ -1003,8 +1003,10 @@ def _run_auto_trade_cycle():
             else:
                 price = round(max(mkt_price - 0.01, our_prob + 0.02), 2)
             price = max(0.01, min(0.99, price))
-            kelly_frac = sig.get("kelly", 0) / 100.0
-            size = round(min(cfg["max_size"], cfg["max_size"] * kelly_frac * 2), 1)
+            # Size = dollars to spend / price = number of shares
+            # Polymarket min order is $1, so ensure size * price >= 1
+            spend = max(1.0, cfg["max_size"])  # at least $1
+            size = round(spend / price, 0)
             size = max(1, size)
             trade_info = {
                 "ts": datetime.now(timezone.utc).isoformat(),
