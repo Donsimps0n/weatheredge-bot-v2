@@ -319,7 +319,7 @@ def save_config():
     trading_mode = data.get("trading_mode", "paper").strip().lower()
 
     if not proxy_key or not proxy_key.startswith("pk-"):
-        return jsonify({"ok": False, "error": "Invalid proxy key ÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂ¢ÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂ must start with pk-"}), 400
+        return jsonify({"ok": False, "error": "Invalid proxy key ÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂ¢ÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂ must start with pk-"}), 400
     if trading_mode not in ("paper", "live"):
         return jsonify({"ok": False, "error": "trading_mode must be paper or live"}), 400
 
@@ -341,7 +341,7 @@ def save_config():
             logger.error("Failed to persist to Railway: %s", exc)
             return jsonify({"ok": True, "warning": "Saved in memory but Railway persist failed"})
     else:
-        logger.warning("RAILWAY_API_TOKEN / SERVICE_ID / ENV_ID not set ÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂ¢ÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂ saved in memory only")
+        logger.warning("RAILWAY_API_TOKEN / SERVICE_ID / ENV_ID not set ÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂ¢ÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂ saved in memory only")
 
     return jsonify({"ok": True})
 
@@ -574,7 +574,7 @@ _CITY_COORDS = {
     "dc": (38.91, -77.04), "washington": (38.91, -77.04),
     "seoul": (37.57, 126.98), "beijing": (39.90, 116.41),
     "ankara": (39.93, 32.86), "buenos aires": (-34.60, -58.38),
-    "sao paulo": (-23.55, -46.63), "sÃÂ£o paulo": (-23.55, -46.63),
+    "sao paulo": (-23.55, -46.63), "sÃÂÃÂ£o paulo": (-23.55, -46.63),
     "mexico city": (19.43, -99.13), "cairo": (30.04, 31.24),
     "johannesburg": (-26.20, 28.05), "hong kong": (22.32, 114.17),
     "bangkok": (13.76, 100.50), "jakarta": (-6.21, 106.85),
@@ -613,7 +613,7 @@ def _parse_market_q(q):
     threshold_c = ((threshold - 32) * 5.0 / 9.0) if (is_f and threshold) else threshold
     is_above = any(w in ql for w in ['above', 'exceed', 'over', 'at least', 'reach', 'higher', 'warmer'])
     is_below = any(w in ql for w in ['below', 'under', 'lower', 'cooler', 'colder'])
-    # Detect exact temperature questions: "be XÃÂ°C on" with no above/below
+    # Detect exact temperature questions: "be XÃÂÃÂ°C on" with no above/below
     is_exact = (not is_above and not is_below and threshold is not None
                 and _re.search(r'be\s+\d+', ql) is not None)
     if is_exact:
@@ -676,10 +676,10 @@ def _build_signals(weather_markets, weather_cities):
             # Use forecasted daily HIGH, not current temp
             if _is_tomorrow and wx.get("temp_max_tomorrow") is not None:
                 ftemp = wx["temp_max_tomorrow"]
-                sigma = 2.0  # tomorrow forecast: ~2ÃÂ°C uncertainty
+                sigma = 2.0  # tomorrow forecast: ~2ÃÂÃÂ°C uncertainty
             elif wx.get("temp_max") is not None:
                 ftemp = wx["temp_max"]
-                sigma = 1.5  # today forecast: ~1.5ÃÂ°C uncertainty
+                sigma = 1.5  # today forecast: ~1.5ÃÂÃÂ°C uncertainty
             else:
                 ftemp = wx.get("temp", 20)
                 sigma = 3.0
@@ -725,6 +725,9 @@ def _build_signals(weather_markets, weather_cities):
             "kelly": kelly, "active": mkt.get("active", True),
             "end_date": mkt.get("end_date", ""),
             "direction": p["direction"],
+            "slug": mkt.get("slug", ""),
+            "condition_id": mkt.get("condition_id", ""),
+            "tokens": mkt.get("tokens", []),
         })
     signals.sort(key=lambda s: abs(s["theo_ev"]), reverse=True)
     return signals
@@ -763,7 +766,8 @@ _clob_creds = None
 _trade_log = []
 _MAX_TRADE_LOG = 200
 
-def _init_clob():
+def _init_clob()
+_start_auto_trade_timer():
     """Initialize Polymarket CLOB client from env vars."""
     global _clob_client, _clob_creds
     pk = os.environ.get("POLYMARKET_PRIVATE_KEY", "")
@@ -944,6 +948,174 @@ def _start_scheduler_thread():
     t = threading.Thread(target=_run_scheduler, daemon=True)
     t.start()
     logger.info("Scheduler started in background thread")
+
+
+
+
+# ---------- Auto-Trade Loop ----------
+_auto_trade_active = False
+_auto_trade_config = {
+    "min_ev": 5.0,       # Minimum theo EV to trade
+    "min_kelly": 2.0,    # Minimum kelly %
+    "max_size": 10,      # Max USDC per order
+    "max_trades_per_cycle": 3,  # Don't flood
+    "paper_mode": True,   # Start in paper mode for safety
+}
+_paper_trades = []
+
+def _run_auto_trade_cycle():
+    """Execute one auto-trade cycle: get signals, filter, place orders."""
+    global _paper_trades
+    cfg = _auto_trade_config
+    if not _auto_trade_active:
+        return
+    try:
+        sigs = _build_signals()
+        if not sigs:
+            logger.info("Auto-trade: no signals")
+            return
+        # Filter for tradeable signals
+        tradeable = [s for s in sigs 
+                     if s.get("theo_ev", 0) >= cfg["min_ev"]
+                     and s.get("kelly", 0) >= cfg["min_kelly"]
+                     and s.get("signal") in ("BUY YES", "BUY NO")
+                     and s.get("tokens")]
+        tradeable.sort(key=lambda s: s["theo_ev"], reverse=True)
+        traded = 0
+        for sig in tradeable[:cfg["max_trades_per_cycle"]]:
+            tokens = sig.get("tokens", [])
+            sig_type = sig["signal"]
+            # Find the right token
+            target_outcome = "Yes" if sig_type == "BUY YES" else "No"
+            token_id = None
+            for tk in tokens:
+                if str(tk.get("outcome", "")).lower() == target_outcome.lower():
+                    token_id = tk.get("token_id", "")
+                    break
+            if not token_id:
+                continue
+            our_prob = sig.get("our_prob", 50) / 100.0
+            mkt_price = sig.get("market_price", 50) / 100.0
+            if sig_type == "BUY YES":
+                price = round(min(mkt_price + 0.01, our_prob - 0.02), 2)
+            else:
+                price = round(max(mkt_price - 0.01, our_prob + 0.02), 2)
+            price = max(0.01, min(0.99, price))
+            kelly_frac = sig.get("kelly", 0) / 100.0
+            size = round(min(cfg["max_size"], cfg["max_size"] * kelly_frac * 2), 1)
+            size = max(1, size)
+            trade_info = {
+                "ts": datetime.now(timezone.utc).isoformat(),
+                "question": sig.get("question", "")[:80],
+                "city": sig.get("city", ""),
+                "signal": sig_type,
+                "token_id": token_id[:12] + "...",
+                "price": price, "size": size,
+                "ev": sig.get("theo_ev", 0),
+                "kelly": sig.get("kelly", 0),
+                "our_prob": sig.get("our_prob", 0),
+                "mkt_price": sig.get("market_price", 0),
+            }
+            if cfg["paper_mode"]:
+                trade_info["mode"] = "PAPER"
+                _paper_trades.append(trade_info)
+                if len(_paper_trades) > 200:
+                    _paper_trades = _paper_trades[-200:]
+                _trade_log.append(trade_info)
+                if len(_trade_log) > _MAX_TRADE_LOG:
+                    _trade_log[:] = _trade_log[-_MAX_TRADE_LOG:]
+                logger.info("PAPER TRADE: %s %s @ %.2f x %.1f (EV=%.1f)", sig_type, sig.get("city",""), price, size, sig.get("theo_ev",0))
+                traded += 1
+            else:
+                # LIVE trading
+                if not _clob_client:
+                    logger.warning("Auto-trade: CLOB client not connected, skipping")
+                    continue
+                try:
+                    side = "BUY" if sig_type == "BUY YES" else "BUY"
+                    order_args = {
+                        "token_id": token_id,
+                        "price": price,
+                        "size": size,
+                        "side": side,
+                    }
+                    tick_size = "0.01"
+                    neg_risk = True
+                    resp = _clob_client.create_and_post_order(order_args, {"tick_size": tick_size, "neg_risk": neg_risk})
+                    trade_info["mode"] = "LIVE"
+                    trade_info["response"] = str(resp)[:200]
+                    trade_info["token_id"] = token_id
+                    _trade_log.append(trade_info)
+                    if len(_trade_log) > _MAX_TRADE_LOG:
+                        _trade_log[:] = _trade_log[-_MAX_TRADE_LOG:]
+                    logger.info("LIVE TRADE: %s %s @ %.2f x %.1f => %s", sig_type, sig.get("city",""), price, size, str(resp)[:100])
+                    traded += 1
+                except Exception as exc:
+                    logger.error("Trade failed for %s: %s", sig.get("city",""), exc)
+                    trade_info["mode"] = "FAILED"
+                    trade_info["error"] = str(exc)[:200]
+                    _trade_log.append(trade_info)
+        logger.info("Auto-trade cycle done: %d trades placed (%s mode)", traded, "PAPER" if cfg["paper_mode"] else "LIVE")
+    except Exception as exc:
+        logger.error("Auto-trade cycle error: %s", exc)
+
+
+def _start_auto_trade_timer():
+    """Run auto-trade cycle every 5 minutes in background thread."""
+    import threading
+    def _loop():
+        while True:
+            if _auto_trade_active:
+                _run_auto_trade_cycle()
+            time.sleep(300)  # 5 minutes
+    t = threading.Thread(target=_loop, daemon=True)
+    t.start()
+    logger.info("Auto-trade timer started (every 5 min)")
+
+
+@app.route("/api/bot/start", methods=["POST"])
+def start_bot():
+    """Start the auto-trade bot. Body: {mode: 'paper'|'live', min_ev, max_size}"""
+    global _auto_trade_active
+    data = request.get_json(force=True) if request.data else {}
+    mode = data.get("mode", "paper").lower()
+    _auto_trade_config["paper_mode"] = mode != "live"
+    if "min_ev" in data:
+        _auto_trade_config["min_ev"] = float(data["min_ev"])
+    if "max_size" in data:
+        _auto_trade_config["max_size"] = float(data["max_size"])
+    if "min_kelly" in data:
+        _auto_trade_config["min_kelly"] = float(data["min_kelly"])
+    if "max_trades_per_cycle" in data:
+        _auto_trade_config["max_trades_per_cycle"] = int(data["max_trades_per_cycle"])
+    _auto_trade_active = True
+    # Run first cycle immediately
+    import threading
+    threading.Thread(target=_run_auto_trade_cycle, daemon=True).start()
+    _log(f"Bot started in {mode.upper()} mode (min_ev={_auto_trade_config['min_ev']}, max_size={_auto_trade_config['max_size']})")
+    return jsonify({"ok": True, "mode": mode, "config": _auto_trade_config, "status": "RUNNING"})
+
+
+@app.route("/api/bot/stop", methods=["POST"])
+def stop_bot():
+    """Stop the auto-trade bot."""
+    global _auto_trade_active
+    _auto_trade_active = False
+    _log("Bot stopped")
+    return jsonify({"ok": True, "status": "STOPPED"})
+
+
+@app.route("/api/bot/status")
+def bot_status():
+    """Get bot status and recent trades."""
+    return jsonify({
+        "ok": True,
+        "active": _auto_trade_active,
+        "config": _auto_trade_config,
+        "recent_trades": _trade_log[-20:] if _trade_log else [],
+        "paper_trades_count": len(_paper_trades),
+        "total_trades": len(_trade_log),
+    })
 
 
 if __name__ == "__main__":
