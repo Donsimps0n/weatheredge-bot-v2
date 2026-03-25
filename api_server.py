@@ -319,7 +319,7 @@ def save_config():
     trading_mode = data.get("trading_mode", "paper").strip().lower()
 
     if not proxy_key or not proxy_key.startswith("pk-"):
-        return jsonify({"ok": False, "error": "Invalid proxy key ÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂ¢ÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂ must start with pk-"}), 400
+        return jsonify({"ok": False, "error": "Invalid proxy key ÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂ¢ÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂ must start with pk-"}), 400
     if trading_mode not in ("paper", "live"):
         return jsonify({"ok": False, "error": "trading_mode must be paper or live"}), 400
 
@@ -341,7 +341,7 @@ def save_config():
             logger.error("Failed to persist to Railway: %s", exc)
             return jsonify({"ok": True, "warning": "Saved in memory but Railway persist failed"})
     else:
-        logger.warning("RAILWAY_API_TOKEN / SERVICE_ID / ENV_ID not set ÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂ¢ÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂ saved in memory only")
+        logger.warning("RAILWAY_API_TOKEN / SERVICE_ID / ENV_ID not set ÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂ¢ÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂ saved in memory only")
 
     return jsonify({"ok": True})
 
@@ -471,6 +471,20 @@ WEATHER_CITIES = [
     {"name":"Lima","country":"PE","lat":-12.05,"lon":-77.04},
     {"name":"Buenos Aires","country":"AR","lat":-34.60,"lon":-58.38},
     {"name":"Oslo","country":"NO","lat":59.91,"lon":10.75},
+    {"name": "Beijing", "country": "CN", "lat": 39.90, "lon": 116.41},
+    {"name": "Ankara", "country": "TR", "lat": 39.93, "lon": 32.86},
+    {"name": "Sao Paulo", "country": "BR", "lat": -23.55, "lon": -46.63},
+    {"name": "Tel Aviv", "country": "IL", "lat": 32.09, "lon": 34.78},
+    {"name": "Istanbul", "country": "TR", "lat": 41.01, "lon": 28.98},
+    {"name": "Bogota", "country": "CO", "lat": 4.71, "lon": -74.07},
+    {"name": "Santiago", "country": "CL", "lat": -33.45, "lon": -70.67},
+    {"name": "Riyadh", "country": "SA", "lat": 24.71, "lon": 46.67},
+    {"name": "San Diego", "country": "US", "lat": 32.72, "lon": -117.16},
+    {"name": "Boston", "country": "US", "lat": 42.36, "lon": -71.06},
+    {"name": "Detroit", "country": "US", "lat": 42.33, "lon": -83.05},
+    {"name": "Las Vegas", "country": "US", "lat": 36.17, "lon": -115.14},
+    {"name": "Baltimore", "country": "US", "lat": 39.29, "lon": -76.61},
+    {"name": "Washington DC", "country": "US", "lat": 38.91, "lon": -77.04},
 ]
 
 @app.route("/api/weather")
@@ -560,7 +574,7 @@ _CITY_COORDS = {
     "dc": (38.91, -77.04), "washington": (38.91, -77.04),
     "seoul": (37.57, 126.98), "beijing": (39.90, 116.41),
     "ankara": (39.93, 32.86), "buenos aires": (-34.60, -58.38),
-    "sao paulo": (-23.55, -46.63), "sÃ£o paulo": (-23.55, -46.63),
+    "sao paulo": (-23.55, -46.63), "sÃÂ£o paulo": (-23.55, -46.63),
     "mexico city": (19.43, -99.13), "cairo": (30.04, 31.24),
     "johannesburg": (-26.20, 28.05), "hong kong": (22.32, 114.17),
     "bangkok": (13.76, 100.50), "jakarta": (-6.21, 106.85),
@@ -568,6 +582,16 @@ _CITY_COORDS = {
     "bogota": (4.71, -74.07), "santiago": (-33.45, -70.67),
     "lagos": (6.52, 3.38), "nairobi": (-1.29, 36.82),
     "riyadh": (24.71, 46.67), "tel aviv": (32.09, 34.78),
+    "paris": (48.86, 2.35), "sydney": (-33.87, 151.21),
+    "berlin": (52.52, 13.41), "moscow": (55.76, 37.62),
+    "dallas": (32.78, -96.80), "atlanta": (33.75, -84.39),
+    "seattle": (47.61, -122.33), "madrid": (40.42, -3.70),
+    "cairo": (30.04, 31.24), "nairobi": (-1.29, 36.82),
+    "singapore": (1.35, 103.82), "manila": (14.60, 120.98),
+    "taipei": (25.03, 121.57), "denver": (39.74, -104.99),
+    "phoenix": (33.45, -112.07), "san francisco": (37.77, -122.42),
+    "los angeles": (34.05, -118.24), "oslo": (59.91, 10.75),
+    "rome": (41.90, 12.50), "washington dc": (38.91, -77.04),
 }
 
 
@@ -589,7 +613,7 @@ def _parse_market_q(q):
     threshold_c = ((threshold - 32) * 5.0 / 9.0) if (is_f and threshold) else threshold
     is_above = any(w in ql for w in ['above', 'exceed', 'over', 'at least', 'reach', 'higher', 'warmer'])
     is_below = any(w in ql for w in ['below', 'under', 'lower', 'cooler', 'colder'])
-    # Detect exact temperature questions: "be XÂ°C on" with no above/below
+    # Detect exact temperature questions: "be XÃÂ°C on" with no above/below
     is_exact = (not is_above and not is_below and threshold is not None
                 and _re.search(r'be\s+\d+', ql) is not None)
     if is_exact:
@@ -652,10 +676,10 @@ def _build_signals(weather_markets, weather_cities):
             # Use forecasted daily HIGH, not current temp
             if _is_tomorrow and wx.get("temp_max_tomorrow") is not None:
                 ftemp = wx["temp_max_tomorrow"]
-                sigma = 2.0  # tomorrow forecast: ~2Â°C uncertainty
+                sigma = 2.0  # tomorrow forecast: ~2ÃÂ°C uncertainty
             elif wx.get("temp_max") is not None:
                 ftemp = wx["temp_max"]
-                sigma = 1.5  # today forecast: ~1.5Â°C uncertainty
+                sigma = 1.5  # today forecast: ~1.5ÃÂ°C uncertainty
             else:
                 ftemp = wx.get("temp", 20)
                 sigma = 3.0
