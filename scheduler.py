@@ -11,6 +11,49 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional, Callable
 import time
 
+import time as _time
+try:
+    import requests as _req_mod
+except ImportError:
+    _req_mod = None
+
+_skip_list = {}
+_SKIP_S = 3600
+_bal_cache = [None, 0.0]
+
+def _is_skipped(slug):
+    if slug in _skip_list:
+        if _time.time() - _skip_list[slug] < _SKIP_S:
+            return True
+        del _skip_list[slug]
+    return False
+
+def _mark_skipped(slug):
+    _skip_list[slug] = _time.time()
+    import logging; logging.getLogger(__name__).warning("SKIP: %s (%d skipped)", slug, len(_skip_list))
+
+def _get_balance():
+    if _bal_cache[0] is not None and _time.time() - _bal_cache[1] < 30:
+        return _bal_cache[0]
+    try:
+        if _req_mod:
+            r = _req_mod.get("https://clob.polymarket.com/balance", params={"owner": "0xE2FB305bE360286808e5ffa2923B70d9014a37BE"}, timeout=5)
+            if r.ok:
+                d = r.json()
+                bal = float(d.get("balance", d.get("USDC", 99)))
+                _bal_cache[0] = bal; _bal_cache[1] = _time.time()
+                return bal
+    except: pass
+    return _bal_cache[0] if _bal_cache[0] else 999.0
+
+def _smart_exit(entry_cost, current_value, theo_ev, mins_to_res):
+    if entry_cost <= 0: return False, "no_cost"
+    if mins_to_res < 120 and current_value < 0.5 * entry_cost: return True, "time_exit"
+    if theo_ev < 0.0: return True, "ev_decay"
+    if current_value > 2.0 * entry_cost: return True, "profit_take"
+    return False, "hold"
+
+
 # Local imports (assuming these modules exist)
 try:
     from ledger import Ledger
