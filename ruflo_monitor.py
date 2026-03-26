@@ -61,10 +61,23 @@ class PreTradeValidator:
 # AGENT 2 - POSITION MONITOR
 # ============================================================
 class PositionMonitor:
-    """Monitors open positions every 5 min, applies smart exit rules."""
+    """Monitors open positions every 5 min, applies smart exit rules.
+
+    Spread-aware: low-priced tokens (avg entry < 10c) get a 25-min grace
+    period before any stop-loss or time-exit can fire, because the bid-ask
+    spread alone can make a position look 15-50% underwater immediately after
+    entry even when the underlying edge is intact.  Profit-take fires at any
+    time since we never want to miss locking in gains.
+    """
+
+    def __init__(self):
+        # Tracks UTC datetime each position was first observed, keyed by
+        # conditionId (or title as fallback).  Persists across check cycles.
+        self._first_seen: dict = {}
 
     def check_positions(self) -> list:
         alerts = []
+        now = datetime.now(timezone.utc)
         try:
             r = requests.get(f'{POLYMARKET_DATA}/positions?user={WALLET}', timeout=10)
             if not r.ok:
@@ -82,25 +95,41 @@ class PositionMonitor:
                 if end_str:
                     try:
                         end = datetime.fromisoformat(end_str.replace('Z','+00:00'))
-                        mins_left = (end - datetime.now(timezone.utc)).total_seconds() / 60
+                        mins_left = (end - now).total_seconds() / 60
                     except: pass
 
                 if entry <= 0: continue
                 ratio = current / entry
 
-                # RULE A: time exit
-                if mins_left < 120 and ratio < 0.5:
+                # --- spread-aware grace period ---
+                # Estimate avg price per token to detect cheap-token entries.
+                shares = float(p.get('size', p.get('shares', 0)))
+                avg_price = (entry / shares) if shares > 0 else 1.0
+                is_cheap = avg_price < 0.10   # tokens priced under 10c
+
+                pos_key = p.get('conditionId', title)
+                if pos_key not in self._first_seen:
+                    self._first_seen[pos_key] = now
+                mins_held = (now - self._first_seen[pos_key]).total_seconds() / 60
+
+                # Grace: 25 min for cheap tokens (spread noise), 10 min for others
+                grace = 25 if is_cheap else 10
+                in_grace = mins_held < grace
+
+                # RULE A: time exit — only after grace; tighter ratio so spread
+                # noise (up to ~50%) doesn't trigger a premature exit
+                if not in_grace and mins_left < 120 and ratio < 0.35:
                     alerts.append({'alert': 'EXIT_TIME', 'market': title,
-                        'reason': f'<2h to resolution, value at {ratio*100:.0f}% of entry',
+                        'reason': f'<2h to resolution, value at {ratio*100:.0f}% of entry (held {mins_held:.0f}m)',
                         'entry': entry, 'current': current, 'mins_left': mins_left})
 
-                # RULE B: EV decay (would need model check - flag for now)
-                elif ratio < 0.15:
+                # RULE B: EV decay stop-loss — only after grace period
+                elif not in_grace and ratio < 0.15:
                     alerts.append({'alert': 'EXIT_EV_DECAY', 'market': title,
-                        'reason': f'value at only {ratio*100:.0f}% of entry - likely model was wrong',
+                        'reason': f'value at only {ratio*100:.0f}% of entry after {mins_held:.0f}m - model wrong',
                         'entry': entry, 'current': current})
 
-                # RULE C: profit take
+                # RULE C: profit take — fires immediately, no grace needed
                 elif ratio > 2.0:
                     alerts.append({'alert': 'PROFIT_TAKE', 'market': title,
                         'reason': f'value at {ratio*100:.0f}% of entry - take 50% profit',
