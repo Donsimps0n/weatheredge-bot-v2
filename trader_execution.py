@@ -572,23 +572,52 @@ class PaperExecutionAdapter:
 
 class LiveExecutionAdapter:
     """
-    Live execution adapter: Polymarket CLOB API integration (TODO).
+    Live execution adapter: Polymarket CLOB API integration via py-clob-client.
+    Falls back to paper mode silently if POLYMARKET_PRIVATE_KEY is missing.
     """
 
     def __init__(self, api_key: str = "", private_key: str = ""):
         """
         Initialize live adapter with credentials.
-
-        Args:
-            api_key: Polymarket API key
-            private_key: Wallet private key for signing orders
+        If private_key is empty, reads from POLYMARKET_PRIVATE_KEY env var.
+        Falls back to paper mode if key missing.
         """
+        import os
         self.api_key = api_key
-        self.private_key = private_key
+        self.private_key = private_key or os.environ.get("POLYMARKET_PRIVATE_KEY", "")
+        self._client = None
+        self._paper_fallback = False
+
+        if not self.private_key:
+            logger.warning(
+                "LiveExecutionAdapter: POLYMARKET_PRIVATE_KEY not set — falling back to paper mode"
+            )
+            self._paper_fallback = True
+        else:
+            try:
+                self._init_client()
+            except Exception as e:
+                logger.error("LiveExecutionAdapter: client init failed: %s — paper fallback", e)
+                self._paper_fallback = True
+
         logger.info(
-            "Initialized LiveExecutionAdapter (CLOB API integration pending), "
-            "impact_method=CLOB"
+            "Initialized LiveExecutionAdapter (paper_fallback=%s), impact_method=CLOB",
+            self._paper_fallback
         )
+
+    def _init_client(self):
+        """Initialize the py-clob-client."""
+        from py_clob_client.client import ClobClient
+        from py_clob_client.clob_types import ApiCreds
+        chain_id = 137  # Polygon mainnet
+        host = "https://clob.polymarket.com"
+        self._client = ClobClient(
+            host,
+            chain_id=chain_id,
+            key=self.private_key,
+            signature_type=0,
+        )
+        logger.info("LiveExecutionAdapter: CLOB client initialized")
 
     def place_order(
         self,
@@ -598,33 +627,82 @@ class LiveExecutionAdapter:
         side: str
     ) -> dict:
         """
-        Place an order on Polymarket CLOB.
-
-        TODO: Sign order with wallet and submit to CLOB API.
+        Place a BUY or SELL order on Polymarket CLOB.
+        side: "BUY" or "SELL"
+        Returns dict with order_id and status.
         """
-        raise NotImplementedError(
-            "Live order placement not yet implemented. "
-            "TODO: Implement Polymarket CLOB API integration with order signing."
-        )
+        if self._paper_fallback:
+            import uuid
+            order_id = str(uuid.uuid4())
+            logger.info(
+                "[PAPER_FALLBACK] place_order: token=%s price=%.4f size=%.2f side=%s → %s",
+                token_id[:16], price, size, side, order_id
+            )
+            return {"order_id": order_id, "status": "PAPER_FALLBACK", "price": price, "size": size}
+
+        try:
+            from py_clob_client.order_builder.constants import BUY, SELL as SELL_SIDE
+            from py_clob_client.clob_types import OrderArgs
+
+            # Normalize to YES token side
+            eff_side, adj_price, use_token = normalize_to_yes_execution(
+                side, price, token_id
+            )
+            clob_side = BUY if eff_side in ("YES", "BUY") else SELL_SIDE
+
+            order_args = OrderArgs(
+                price=adj_price,
+                size=size,
+                side=clob_side,
+                token_id=use_token,
+            )
+            resp = self._client.create_and_post_order(order_args)
+            order_id = resp.get("orderID", resp.get("id", "unknown")) if isinstance(resp, dict) else str(resp)[:64]
+            logger.info(
+                "[LIVE] place_order: token=%s price=%.4f size=%.2f side=%s → %s",
+                token_id[:16], adj_price, size, side, order_id
+            )
+            return {
+                "order_id": order_id,
+                "status": resp.get("status", "placed") if isinstance(resp, dict) else "placed",
+                "price": adj_price,
+                "size": size,
+                "raw": str(resp)[:200],
+            }
+        except Exception as e:
+            logger.error("LiveExecutionAdapter.place_order failed: %s", e)
+            return {"order_id": None, "status": "ERROR", "error": str(e)}
 
     def cancel_order(self, order_id: str) -> dict:
-        """
-        Cancel an order on Polymarket CLOB.
+        """Cancel an open order on Polymarket CLOB."""
+        if self._paper_fallback:
+            logger.info("[PAPER_FALLBACK] cancel_order: %s", order_id)
+            return {"order_id": order_id, "status": "PAPER_FALLBACK_CANCELLED"}
 
-        TODO: Sign cancellation with wallet and submit to CLOB API.
-        """
-        raise NotImplementedError(
-            "Live order cancellation not yet implemented. "
-            "TODO: Implement Polymarket CLOB API integration."
-        )
+        try:
+            resp = self._client.cancel(order_id)
+            logger.info("[LIVE] cancel_order: %s → %s", order_id, str(resp)[:100])
+            return {"order_id": order_id, "status": "cancelled", "raw": str(resp)[:200]}
+        except Exception as e:
+            logger.error("LiveExecutionAdapter.cancel_order failed: %s", e)
+            return {"order_id": order_id, "status": "ERROR", "error": str(e)}
 
     def get_order_status(self, order_id: str) -> dict:
-        """
-        Get order status from Polymarket CLOB.
+        """Get current status of an order from Polymarket CLOB."""
+        if self._paper_fallback:
+            return {"order_id": order_id, "status": "PAPER_FALLBACK"}
 
-        TODO: Query CLOB API for current order state.
-        """
-        raise NotImplementedError(
-            "Live order status query not yet implemented. "
-            "TODO: Implement Polymarket CLOB API integration."
-        )
+        try:
+            resp = self._client.get_order(order_id)
+            status = resp.get("status", "unknown") if isinstance(resp, dict) else "unknown"
+            logger.info("[LIVE] get_order_status: %s → %s", order_id, status)
+            return {
+                "order_id": order_id,
+                "status": status,
+                "filled_size": resp.get("filledSize", 0) if isinstance(resp, dict) else 0,
+                "raw": str(resp)[:200],
+            }
+        except Exception as e:
+            logger.error("LiveExecutionAdapter.get_order_status failed: %s", e)
+            return {"order_id": order_id, "status": "ERROR", "error": str(e)}
+
