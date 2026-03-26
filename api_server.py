@@ -1001,7 +1001,7 @@ _auto_trade_config = {
     "min_ev": 5.0,       # Minimum theo EV to trade
     "min_kelly": 2.0,    # Minimum kelly %
     "max_size": 10,      # Max USDC per order
-    "max_trades_per_cycle": 3,  # Don't flood
+    "max_trades_per_cycle": 5,  # Allow more high-EV YES trades per cycle
     "paper_mode": True,   # Start in paper mode for safety
 }
 _paper_trades = []
