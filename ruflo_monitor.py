@@ -259,7 +259,7 @@ class NOHarvester:
             if not no_token_id:
                 continue
 
-            cond_key = sig.get('condition_id', '') + '_NO'
+            cond_key = no_token_id  # use token_id — always unique & non-empty
             if cond_key in self._seen:
                 continue
 
@@ -336,7 +336,7 @@ class YESHarvester:
                     break
             if not yes_token_id:
                 continue
-            cond_key = sig.get('condition_id', '') + '_YES_HARVEST'
+            cond_key = yes_token_id  # use token_id — always unique & non-empty
             if cond_key in self._seen:
                 continue
             expected_return_pct = round((1.0 - yes_price) / yes_price * 100, 1)
@@ -356,6 +356,7 @@ class YESHarvester:
                 'confidence': 4,
             })
             city_counts[city] = city_counts.get(city, 0) + 1
+            self._seen.add(cond_key)  # dedup — never re-enter same token
         opps.sort(key=lambda x: x['yes_price'], reverse=False)  # cheapest YES first = highest return
         if opps:
             log.info('YES_HARVESTER: %d opportunities | top=%s YES=%.3f exp=+%.1f%%',
