@@ -35,14 +35,16 @@ except ImportError:
 try:
     from ruflo_monitor import (PreTradeValidator, PositionMonitor as RufloPositionMonitor,
                                PostTradeAnalyst, MarketScanner as RufloMarketScanner,
-                               NOHarvester as RufloNOHarvester)
+                               NOHarvester as RufloNOHarvester,
+                               YESHarvester as RufloYESHarvester)
     _ruflo_validator = PreTradeValidator()
     _ruflo_position_monitor = RufloPositionMonitor()
     _ruflo_analyst = PostTradeAnalyst()
     _ruflo_scanner = RufloMarketScanner()
     _ruflo_no_harvester = RufloNOHarvester()
+    _ruflo_yes_harvester = RufloYESHarvester()
     RUFLO_AVAILABLE = True
-    logger.info("Ruflo agents loaded: Validator, PositionMonitor, Analyst, Scanner, NOHarvester")
+    logger.info("Ruflo agents loaded: Validator, PositionMonitor, Analyst, Scanner, NOHarvester, YESHarvester")
 except ImportError:
     RUFLO_AVAILABLE = False
     logger.warning("ruflo_monitor not available - running without Ruflo agents")
@@ -1210,6 +1212,52 @@ def _run_auto_trade_cycle():
                     traded += 1
             except Exception as _noh_err:
                 logger.error("RUFLO_NO_HARVEST scan error: %s", _noh_err)
+
+        # ── Agent 6: YES Harvester ────────────────────────────────────────────
+        if RUFLO_AVAILABLE and sigs:
+            try:
+                yes_opps = _ruflo_yes_harvester.scan(sigs)
+                yes_h_traded = 0
+                for _yes_opp in yes_opps:
+                    if yes_h_traded >= 5:
+                        break
+                    _yes_tok = _yes_opp.get('yes_token_id', '')
+                    if not _yes_tok or _yes_tok in _traded_tokens:
+                        continue
+                    _yes_px  = _yes_opp['yes_price']
+                    _yes_sz  = _yes_opp['size']
+                    _city    = _yes_opp['city']
+                    _exp     = _yes_opp['expected_return_pct']
+                    _oprob   = _yes_opp['our_prob']
+                    if cfg.get('paper_mode', True):
+                        _paper_trades.append({
+                            'token_id': _yes_tok,
+                            'side': 'BUY',
+                            'price': _yes_px,
+                            'size': _yes_sz,
+                            'timestamp': time.time(),
+                            'signal': 'YES_HARVEST',
+                            'city': _city,
+                        })
+                        _trade_log.append(f"RUFLO_YES_HARVEST PAPER: {_city} | YES @ {_yes_px:.3f} | expected +{_exp:.1f}% | our_prob={_oprob:.1f}%")
+                        logger.info("RUFLO_YES_HARVEST PAPER: %s | YES @ %.3f | expected +%.1f%% | our_prob=%.1f%%",
+                                    _city, _yes_px, _exp, _oprob)
+                    else:
+                        try:
+                            _yes_order = _clob_client.create_and_post_order(OrderArgs(
+                                price=_yes_px, size=_yes_sz, side=BUY, token_id=_yes_tok
+                            ))
+                            _traded_tokens.add(_yes_tok)
+                            _trade_log.append(f"RUFLO_YES_HARVEST LIVE: {_city} | YES @ {_yes_px:.3f} | expected +{_exp:.1f}%")
+                            logger.info("RUFLO_YES_HARVEST LIVE: %s | YES @ %.3f | expected +%.1f%% | order=%s",
+                                        _city, _yes_px, _exp, _yes_order)
+                        except Exception as _yes_err:
+                            logger.error("RUFLO_YES_HARVEST order error %s: %s", _city, _yes_err)
+                    _traded_tokens.add(_yes_tok)
+                    yes_h_traded += 1
+                    traded += 1
+            except Exception as _yh_err:
+                logger.error("RUFLO_YES_HARVEST scan error: %s", _yh_err)
 
         logger.info("Auto-trade cycle done: %d trades placed (%s mode)", traded, "PAPER" if cfg["paper_mode"] else "LIVE")
     except Exception as exc:
