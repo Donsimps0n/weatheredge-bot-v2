@@ -40,7 +40,8 @@ try:
                                WeatherSentinel as RufloWeatherSentinel,
                                      AccuracyTracker as RufloAccuracyTracker,
                                      IntelligenceFeed as RufloIntelligenceFeed,
-                                     RufloCoordinator as RufloCoordinatorAgent)
+                                     RufloCoordinator as RufloCoordinatorAgent,
+                                     RufloSharedState)
     _ruflo_validator = PreTradeValidator()
     _ruflo_position_monitor = RufloPositionMonitor()
     _ruflo_analyst = PostTradeAnalyst()
@@ -51,8 +52,18 @@ try:
     _ruflo_accuracy = RufloAccuracyTracker()
     _ruflo_intel = RufloIntelligenceFeed()
     _ruflo_coordinator = RufloCoordinatorAgent()
+    _ruflo_shared = RufloSharedState()
+    _ruflo_shared.register_agent('sentinel', 'METAR polling + weather trends for 19 stations')
+    _ruflo_shared.register_agent('accuracy_tracker', 'Brier scoring + resolution tracking')
+    _ruflo_shared.register_agent('intelligence_feed', 'Dynamic sigma + Open-Meteo consensus + bin alerts')
+    _ruflo_shared.register_agent('coordinator', 'Cross-agent supervision + veto/boost')
+    _ruflo_shared.register_agent('validator', 'Pre-trade quality gate')
+    _ruflo_shared.register_agent('analyst', 'Post-trade P&L analysis')
+    _ruflo_shared.register_agent('scanner', 'Market signal ranking')
+    _ruflo_shared.register_agent('no_harvester', 'NO-side opportunity detection')
+    _ruflo_shared.register_agent('yes_harvester', 'YES-side opportunity detection')
     RUFLO_AVAILABLE = True
-    logger.info("Ruflo agents loaded: Validator, PositionMonitor, Analyst, Scanner, NOHarvester, YESHarvester, WeatherSentinel, AccuracyTracker, IntelligenceFeed, Coordinator")
+    logger.info("Ruflo agents loaded: Validator, PositionMonitor, Analyst, Scanner, NOHarvester, YESHarvester, WeatherSentinel, AccuracyTracker, IntelligenceFeed, Coordinator, SharedState")
 except ImportError:
     RUFLO_AVAILABLE = False
     logger.warning("ruflo_monitor not available - running without Ruflo agents")
@@ -849,6 +860,18 @@ def get_coordinator():
         logger.error("coordinator report error: %s", e)
         return jsonify({"ok": False, "error": str(e)}), 500
 
+@app.route("/api/shared-state")
+def get_shared_state():
+    """Shared state bus: channels, events, priorities, agent directory, station reputations."""
+    if not RUFLO_AVAILABLE:
+        return jsonify({"ok": False, "error": "SharedState not available"}), 503
+    try:
+        report = _ruflo_shared.get_state_report()
+        return jsonify(report)
+    except Exception as e:
+        logger.error("shared state report error: %s", e)
+        return jsonify({"ok": False, "error": str(e)}), 500
+
 @app.route("/api/signals")
 def get_signals():
     """Generate trading signals from weather markets + forecasts, cached 5 min."""
@@ -1101,6 +1124,19 @@ def _run_auto_trade_cycle():
                     _ruflo_sentinel.poll()
                 _ruflo_sentinel.enrich_signals(sigs)
                 _ruflo_coordinator.report_agent_status('sentinel', True)
+                # Sentinel -> SharedState
+                try:
+                    _ss_states = _ruflo_sentinel.get_all_states()
+                    _ruflo_shared.publish('sentinel', 'all_states', _ss_states)
+                    _ruflo_shared.publish('sentinel', 'high_confidence', _ruflo_sentinel.get_high_confidence_cities())
+                    for _sid, _st in _ss_states.items():
+                        if _st.get('age_min', 999) > 120:
+                            _ruflo_shared.emit('sentinel', 'station_stale', {'station': _sid, 'age_min': _st.get('age_min')})
+                        _rate = abs(_st.get('rate_f_hr', 0))
+                        if _rate > 2.0:
+                            _ruflo_shared.boost_city_priority('sentinel', _st.get('city', ''), _rate * 2, f'fast_trend_{_rate:.1f}F/hr')
+                except Exception:
+                    pass
             except Exception as e:
                 logger.warning("Sentinel enrich failed: %s", e)
                 _ruflo_coordinator.report_agent_status('sentinel', False, e)
@@ -1112,6 +1148,19 @@ def _run_auto_trade_cycle():
                 if _ruflo_accuracy.needs_resolution_check():
                     _ruflo_accuracy.check_resolutions()
                 _ruflo_coordinator.report_agent_status('accuracy_tracker', True)
+                # AccuracyTracker -> SharedState
+                try:
+                    _ss_report = _ruflo_accuracy.get_accuracy_report()
+                    _ss_ranks = _ss_report.get('station_rankings', [])
+                    _ruflo_shared.publish('accuracy_tracker', 'report', _ss_report)
+                    _ruflo_shared.publish('accuracy_tracker', 'unreliable_stations',
+                        [s['station_id'] for s in _ss_ranks if s.get('brier_score', 1) > 0.4])
+                    _ruflo_shared.publish('accuracy_tracker', 'excellent_stations',
+                        [s['station_id'] for s in _ss_ranks if s.get('brier_score', 1) < 0.15])
+                    for _sr in _ss_ranks:
+                        _ruflo_shared.update_station_reputation(_sr.get('station_id', ''), brier=_sr.get('brier_score'))
+                except Exception:
+                    pass
             except Exception as e:
                 logger.warning("AccuracyTracker cycle failed: %s", e)
                 _ruflo_coordinator.report_agent_status('accuracy_tracker', False, e)
@@ -1121,6 +1170,19 @@ def _run_auto_trade_cycle():
             try:
                 _ruflo_intel.enrich_signals_phase3(sigs, _ruflo_sentinel, _ruflo_accuracy)
                 _ruflo_coordinator.report_agent_status('intelligence_feed', True)
+                # IntelligenceFeed -> SharedState
+                try:
+                    _ss_consensus = _ruflo_intel._consensus_cache
+                    _ruflo_shared.publish('intelligence_feed', 'consensus', _ss_consensus)
+                    _ruflo_shared.publish('intelligence_feed', 'sigma_adjustments', _ruflo_intel._sigma_adjustments)
+                    _ruflo_shared.publish('intelligence_feed', 'alerts', _ruflo_intel._alerts_cache)
+                    for _cc, _cd in _ss_consensus.items():
+                        if _cd.get('agreement') == 'divergent':
+                            _ruflo_shared.emit('intelligence_feed', 'consensus_divergent', {'city': _cc, 'spread': _cd.get('spread_c', 0)})
+                        elif _cd.get('agreement') == 'strong':
+                            _ruflo_shared.boost_city_priority('intelligence_feed', _cc, 10, 'strong_consensus')
+                except Exception:
+                    pass
             except Exception as e:
                 logger.warning("IntelligenceFeed cycle failed: %s", e)
                 _ruflo_coordinator.report_agent_status('intelligence_feed', False, e)
@@ -1130,9 +1192,34 @@ def _run_auto_trade_cycle():
             try:
                 _ruflo_coordinator.evaluate(sigs, _ruflo_analyst)
                 _ruflo_coordinator.report_agent_status('coordinator', True)
+                # Coordinator -> SharedState
+                try:
+                    _ruflo_shared.publish('coordinator', 'decisions', _ruflo_coordinator._decision_log[-20:])
+                    _ruflo_shared.publish('coordinator', 'conviction_stats', _ruflo_coordinator._conviction_stats)
+                    _ruflo_shared.publish('coordinator', 'cooldowns', {
+                        c: cd for c, cd in _ruflo_coordinator._city_cooldowns.items()
+                        if time.time() < cd.get('until', 0)
+                    })
+                    # Coordinator reads stale station events and logs insight
+                    _ss_stale = _ruflo_shared.get_events('station_stale', since_ts=time.time()-600)
+                    if len(_ss_stale) >= 3:
+                        _ruflo_shared.add_strategy_insight('coordinator', f'{len(_ss_stale)} stations stale this cycle - data quality degraded')
+                    # Read priority cities and log
+                    _ss_prio = _ruflo_shared.get_priority_cities()
+                    if _ss_prio:
+                        _ruflo_shared.publish('coordinator', 'priority_cities', _ss_prio)
+                except Exception:
+                    pass
             except Exception as e:
                 logger.warning("Coordinator evaluate failed: %s", e)
                 _ruflo_coordinator.report_agent_status('coordinator', False, e)
+
+        # SharedState: record cycle completion
+        if RUFLO_AVAILABLE:
+            try:
+                _ruflo_shared.record_cycle()
+            except Exception:
+                pass
 
         # Filter for tradeable signals
         tradeable = [s for s in sigs 
