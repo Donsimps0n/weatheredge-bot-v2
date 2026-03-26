@@ -48,7 +48,7 @@ try:
     _ruflo_sentinel = RufloWeatherSentinel()
     _ruflo_accuracy = RufloAccuracyTracker()
     RUFLO_AVAILABLE = True
-        logger.info("Ruflo agents loaded: Validator, PositionMonitor, Analyst, Scanner, NOHarvester, YESHarvester, WeatherSentinel, AccuracyTracker")
+    logger.info("Ruflo agents loaded: Validator, PositionMonitor, Analyst, Scanner, NOHarvester, YESHarvester, WeatherSentinel, AccuracyTracker")
 except ImportError:
     RUFLO_AVAILABLE = False
     logger.warning("ruflo_monitor not available - running without Ruflo agents")
