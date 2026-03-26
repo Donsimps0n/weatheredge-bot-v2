@@ -116,20 +116,20 @@ class PositionMonitor:
                 grace = 25 if is_cheap else 10
                 in_grace = mins_held < grace
 
-                # RULE A: time exit â only after grace; tighter ratio so spread
+                # RULE A: time exit Ã¢ÂÂ only after grace; tighter ratio so spread
                 # noise (up to ~50%) doesn't trigger a premature exit
                 if not in_grace and mins_left < 120 and ratio < 0.35:
                     alerts.append({'alert': 'EXIT_TIME', 'market': title,
                         'reason': f'<2h to resolution, value at {ratio*100:.0f}% of entry (held {mins_held:.0f}m)',
                         'entry': entry, 'current': current, 'mins_left': mins_left})
 
-                # RULE B: EV decay stop-loss â only after grace period
+                # RULE B: EV decay stop-loss Ã¢ÂÂ only after grace period
                 elif not in_grace and ratio < 0.15:
                     alerts.append({'alert': 'EXIT_EV_DECAY', 'market': title,
                         'reason': f'value at only {ratio*100:.0f}% of entry after {mins_held:.0f}m - model wrong',
                         'entry': entry, 'current': current})
 
-                # RULE C: profit take â fires immediately, no grace needed
+                # RULE C: profit take Ã¢ÂÂ fires immediately, no grace needed
                 elif ratio > 2.0:
                     alerts.append({'alert': 'PROFIT_TAKE', 'market': title,
                         'reason': f'value at {ratio*100:.0f}% of entry - take 50% profit',
@@ -213,8 +213,8 @@ class NOHarvester:
       - jangsunjuu  (#7,  $56K profit,  25 trades,  88% WR)
       - ColdMath    (#2,  $80K profit, 5971 trades, 82% WR)
 
-    When a temperature bin is clearly wrong — both our model AND the market
-    price YES at <= 10% — buying NO at 90-98c is near-guaranteed profit.
+    When a temperature bin is clearly wrong â both our model AND the market
+    price YES at <= 10% â buying NO at 90-98c is near-guaranteed profit.
     The bin won't hit; NO resolves to $1.  Each trade earns 2-10% on ~$25,
     deployed across 10-20 bins per cycle: low-risk, consistent daily yield.
     """
@@ -248,7 +248,7 @@ class NOHarvester:
             if no_price < self.min_no_price:
                 continue   # NO not priced high enough
             if our_prob > self.max_our_prob:
-                continue   # Our model still thinks YES is plausible — skip
+                continue   # Our model still thinks YES is plausible â skip
 
             # Must have a NO token to trade
             no_token_id = None
@@ -259,7 +259,7 @@ class NOHarvester:
             if not no_token_id:
                 continue
 
-            cond_key = no_token_id  # use token_id — always unique & non-empty
+            cond_key = no_token_id  # use token_id â always unique & non-empty
             if cond_key in self._seen:
                 continue
 
@@ -297,16 +297,16 @@ class NOHarvester:
 
 class YESHarvester:
     """Scans ALL weather signals for near-certain YES opportunities where the
-    correct bin is highly likely to resolve YES but still priced at 92–98c.
+    correct bin is highly likely to resolve YES but still priced at 92â98c.
     Symmetric mirror of NOHarvester.
 
-    Strategy: When market prices YES at ≥0.92 AND our model also agrees
-    (our_prob ≥ 88%), the expected return is 2–9% with very high confidence.
+    Strategy: When market prices YES at â¥0.92 AND our model also agrees
+    (our_prob â¥ 88%), the expected return is 2â9% with very high confidence.
     This is the 'right-bin certainty' edge used by Handsanitizer23 (#5 $68K)
-    and Hans323 (#3 $80K) — we capture it at lower size but same edge logic.
+    and Hans323 (#3 $80K) â we capture it at lower size but same edge logic.
 
     Return per trade:  (1.0 - yes_price) / yes_price * 100
-      e.g., YES at 0.92 → ~8.7% | YES at 0.95 → ~5.3% | YES at 0.98 → ~2.0%
+      e.g., YES at 0.92 â ~8.7% | YES at 0.95 â ~5.3% | YES at 0.98 â ~2.0%
     """
     def __init__(self):
         self.min_yes_price = 0.92   # Only trade when YES >= 92c
@@ -336,7 +336,7 @@ class YESHarvester:
                     break
             if not yes_token_id:
                 continue
-            cond_key = yes_token_id  # use token_id — always unique & non-empty
+            cond_key = yes_token_id  # use token_id â always unique & non-empty
             if cond_key in self._seen:
                 continue
             expected_return_pct = round((1.0 - yes_price) / yes_price * 100, 1)
@@ -356,13 +356,185 @@ class YESHarvester:
                 'confidence': 4,
             })
             city_counts[city] = city_counts.get(city, 0) + 1
-            self._seen.add(cond_key)  # dedup — never re-enter same token
+            self._seen.add(cond_key)  # dedup â never re-enter same token
         opps.sort(key=lambda x: x['yes_price'], reverse=False)  # cheapest YES first = highest return
         if opps:
             log.info('YES_HARVESTER: %d opportunities | top=%s YES=%.3f exp=+%.1f%%',
                      len(opps), opps[0]['city'], opps[0]['yes_price'],
                      opps[0]['expected_return_pct'])
         return opps[:15]
+
+
+
+# ============================================================
+# AGENT 7 - WEATHER SENTINEL (Live Station Monitor)
+# ============================================================
+class WeatherSentinel:
+    """Continuously monitors METAR weather stations, builds observation
+    history, computes temperature trends, and feeds real-time intelligence
+    to all other agents."""
+
+    METAR_URL = 'https://aviationweather.gov/api/data/metar'
+
+    STATIONS = {
+        'KATL': 'Atlanta',    'KLAX': 'Los Angeles', 'KSFO': 'San Francisco',
+        'CYYZ': 'Toronto',    'EPWA': 'Warsaw',      'KMIA': 'Miami',
+        'KORD': 'Chicago',    'KSEA': 'Seattle',     'LEMD': 'Madrid',
+        'LFPG': 'Paris',      'LLBG': 'Tel Aviv',    'LTAC': 'Istanbul',
+        'RJTT': 'Tokyo',      'RKSI': 'Seoul',       'SAEZ': 'Buenos Aires',
+        'SBGR': 'Sao Paulo',  'WSSS': 'Singapore',   'ZBAA': 'Beijing',
+        'ZSPD': 'Shanghai',
+    }
+
+    CITY_TO_STATION = {v: k for k, v in STATIONS.items()}
+
+    def __init__(self):
+        self._history = {}
+        self._trends = {}
+        self._confidence = {}
+        self._last_poll = 0.0
+        self._poll_count = 0
+        self._errors = {}
+        self._alerts = []
+        self.max_history = 288
+        self.poll_interval = 300
+        log.info('SENTINEL: initialized for %d stations', len(self.STATIONS))
+
+    def poll(self):
+        results = {}
+        now = time.time()
+        station_ids = ','.join(self.STATIONS.keys())
+        try:
+            resp = requests.get(self.METAR_URL, params={'ids': station_ids, 'format': 'json', 'hours': 1}, timeout=15)
+            resp.raise_for_status()
+            metar_data = resp.json()
+        except Exception as e:
+            log.warning('SENTINEL: METAR batch fetch failed: %s', e)
+            for sid in self.STATIONS:
+                self._errors[sid] = self._errors.get(sid, 0) + 1
+            self._last_poll = now
+            self._poll_count += 1
+            return results
+
+        for obs in metar_data:
+            sid = obs.get('icaoId', obs.get('stationId', ''))
+            if sid not in self.STATIONS:
+                continue
+            temp_c = obs.get('temp')
+            if temp_c is None:
+                continue
+            record = {
+                'temp_c': float(temp_c),
+                'dewp_c': obs.get('dewp'),
+                'wdir': obs.get('wdir'),
+                'wspd': obs.get('wspd'),
+                'vis': obs.get('visib'),
+                'cloud': obs.get('cover', ''),
+                'raw': obs.get('rawOb', '')[:120],
+                'ts': now,
+                'obs_time': obs.get('obsTime', obs.get('reportTime', '')),
+            }
+            if sid not in self._history:
+                self._history[sid] = []
+            self._history[sid].append(record)
+            if len(self._history[sid]) > self.max_history:
+                self._history[sid] = self._history[sid][-self.max_history:]
+            self._errors[sid] = 0
+            results[sid] = record
+
+        self._compute_all_trends()
+        self._compute_all_confidence()
+        self._last_poll = now
+        self._poll_count += 1
+        log.info('SENTINEL: polled %d/%d stations', len(results), len(self.STATIONS))
+        return results
+
+    def _compute_all_trends(self):
+        for sid, history in self._history.items():
+            if len(history) < 2:
+                self._trends[sid] = {'rate_c_hr': 0.0, 'direction': 'insufficient'}
+                continue
+            recent = [h for h in history if h['ts'] > time.time() - 7200]
+            if len(recent) < 2:
+                recent = history[-2:]
+            oldest, newest = recent[0], recent[-1]
+            dt_hours = (newest['ts'] - oldest['ts']) / 3600.0
+            if dt_hours < 0.05:
+                self._trends[sid] = {'rate_c_hr': 0.0, 'direction': 'stable'}
+                continue
+            delta_c = newest['temp_c'] - oldest['temp_c']
+            rate = round(delta_c / dt_hours, 2)
+            direction = 'stable' if abs(rate) < 0.3 else ('rising' if rate > 0 else 'falling')
+            self._trends[sid] = {
+                'rate_c_hr': rate, 'rate_f_hr': round(rate * 9/5, 2),
+                'direction': direction,
+                'current_c': newest['temp_c'], 'current_f': round(newest['temp_c'] * 9/5 + 32, 1),
+                'samples': len(recent), 'window_hrs': round(dt_hours, 1),
+            }
+
+    def _compute_all_confidence(self):
+        for sid in self.STATIONS:
+            history = self._history.get(sid, [])
+            errors = self._errors.get(sid, 0)
+            data_score = 0 if not history else (20 if len(history) < 3 else (40 if len(history) < 12 else 60))
+            freshness = 0
+            if history:
+                age = time.time() - history[-1]['ts']
+                freshness = 25 if age < 600 else (15 if age < 1800 else (5 if age < 3600 else 0))
+            error_penalty = min(errors * 15, 50)
+            trend_bonus = min(self._trends.get(sid, {}).get('samples', 0) * 3, 15)
+            self._confidence[sid] = max(0, min(100, data_score + freshness - error_penalty + trend_bonus))
+
+    def check_bin_boundaries(self, city, bins):
+        sid = self.CITY_TO_STATION.get(city)
+        if not sid:
+            return []
+        trend = self._trends.get(sid, {})
+        current_f = trend.get('current_f')
+        rate_f = trend.get('rate_f_hr', 0)
+        if current_f is None:
+            return []
+        alerts = []
+        for boundary in bins:
+            distance = boundary - current_f
+            abs_dist = abs(distance)
+            if abs_dist > 5.0:
+                continue
+            eta_hours = round(abs_dist / abs(rate_f), 1) if rate_f != 0 and ((distance > 0 and rate_f > 0) or (distance < 0 and rate_f < 0)) else None
+            urgency = 'critical' if abs_dist < 1.0 else ('high' if abs_dist < 2.0 else ('medium' if abs_dist < 3.0 else 'low'))
+            alerts.append({'boundary_f': boundary, 'current_f': current_f, 'distance_f': round(distance, 1), 'rate_f_hr': rate_f, 'direction': trend.get('direction', 'unknown'), 'eta_hours': eta_hours, 'urgency': urgency, 'approaching': eta_hours is not None and eta_hours < 3.0})
+        alerts.sort(key=lambda a: abs(a['distance_f']))
+        return alerts
+
+    def enrich_signals(self, sigs):
+        for sig in sigs:
+            city = sig.get('city', '')
+            sid = self.CITY_TO_STATION.get(city)
+            if not sid:
+                continue
+            trend = self._trends.get(sid, {})
+            conf = self._confidence.get(sid, 50)
+            sig['sentinel_confidence'] = conf
+            sig['sentinel_trend'] = trend.get('direction', 'unknown')
+            sig['sentinel_rate_f_hr'] = trend.get('rate_f_hr', 0)
+            sig['sentinel_current_f'] = trend.get('current_f')
+            sig['sentinel_current_c'] = trend.get('current_c')
+            sig['sentinel_station'] = sid
+        return sigs
+
+    def get_station_state(self, station_id):
+        history = self._history.get(station_id, [])
+        return {'station': station_id, 'city': self.STATIONS.get(station_id, 'Unknown'), 'confidence': self._confidence.get(station_id, 0), 'trend': self._trends.get(station_id, {}), 'observations': len(history), 'latest': history[-1] if history else None, 'errors': self._errors.get(station_id, 0)}
+
+    def get_all_states(self):
+        stations = {sid: self.get_station_state(sid) for sid in self.STATIONS}
+        return {'ok': True, 'poll_count': self._poll_count, 'last_poll': self._last_poll, 'station_count': len(self.STATIONS), 'stations_with_data': sum(1 for s in self._history if self._history[s]), 'stations': stations}
+
+    def needs_poll(self):
+        return (time.time() - self._last_poll) >= self.poll_interval
+
+    def get_high_confidence_cities(self, min_confidence=60.0):
+        return [self.STATIONS[sid] for sid, conf in self._confidence.items() if conf >= min_confidence]
 
 
 # MAIN MONITORING LOOP
