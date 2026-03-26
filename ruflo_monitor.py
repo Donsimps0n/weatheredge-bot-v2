@@ -293,6 +293,77 @@ class NOHarvester:
 
 
 # ============================================================
+
+
+class YESHarvester:
+    """Scans ALL weather signals for near-certain YES opportunities where the
+    correct bin is highly likely to resolve YES but still priced at 92–98c.
+    Symmetric mirror of NOHarvester.
+
+    Strategy: When market prices YES at ≥0.92 AND our model also agrees
+    (our_prob ≥ 88%), the expected return is 2–9% with very high confidence.
+    This is the 'right-bin certainty' edge used by Handsanitizer23 (#5 $68K)
+    and Hans323 (#3 $80K) — we capture it at lower size but same edge logic.
+
+    Return per trade:  (1.0 - yes_price) / yes_price * 100
+      e.g., YES at 0.92 → ~8.7% | YES at 0.95 → ~5.3% | YES at 0.98 → ~2.0%
+    """
+    def __init__(self):
+        self.min_yes_price = 0.92   # Only trade when YES >= 92c
+        self.min_our_prob  = 88.0   # Our model agrees: >= 88% YES probability
+        self.max_size      = 25.0   # $25 per YES trade (same as NO side)
+        self.max_per_city  = 3      # Cap YES harvest trades per city per cycle
+        self._seen: set    = set()  # condition_ids already traded this session
+
+    def scan(self, all_signals: list) -> list:
+        opps = []
+        city_counts: dict = {}
+        for sig in all_signals:
+            city     = sig.get('city', '').lower()
+            if city_counts.get(city, 0) >= self.max_per_city:
+                continue
+            yes_pct  = sig.get('market_price', 50)
+            our_prob = sig.get('our_prob', 50)
+            yes_price = round(yes_pct / 100, 4)
+            if yes_price < self.min_yes_price:
+                continue
+            if our_prob < self.min_our_prob:
+                continue
+            yes_token_id = None
+            for tk in sig.get('tokens', []):
+                if str(tk.get('outcome', '')).lower() == 'yes':
+                    yes_token_id = tk.get('token_id', '')
+                    break
+            if not yes_token_id:
+                continue
+            cond_key = sig.get('condition_id', '') + '_YES_HARVEST'
+            if cond_key in self._seen:
+                continue
+            expected_return_pct = round((1.0 - yes_price) / yes_price * 100, 1)
+            opps.append({
+                'city': sig.get('city', ''),
+                'question': sig.get('question', ''),
+                'signal': 'BUY YES',
+                'yes_price': yes_price,
+                'yes_price_pct': yes_pct,
+                'our_prob': our_prob,
+                'expected_return_pct': expected_return_pct,
+                'yes_token_id': yes_token_id,
+                'condition_id': sig.get('condition_id', ''),
+                'end_date': sig.get('end_date', ''),
+                'tokens': sig.get('tokens', []),
+                'size': self.max_size,
+                'confidence': 4,
+            })
+            city_counts[city] = city_counts.get(city, 0) + 1
+        opps.sort(key=lambda x: x['yes_price'], reverse=False)  # cheapest YES first = highest return
+        if opps:
+            log.info('YES_HARVESTER: %d opportunities | top=%s YES=%.3f exp=+%.1f%%',
+                     len(opps), opps[0]['city'], opps[0]['yes_price'],
+                     opps[0]['expected_return_pct'])
+        return opps[:15]
+
+
 # MAIN MONITORING LOOP
 # ============================================================
 def run_monitor():
