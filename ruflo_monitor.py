@@ -1153,6 +1153,303 @@ class IntelligenceFeed:
         }
 
 
+
+class RufloCoordinator:
+    """Agent 10: Meta-agent that supervises all other agents.
+
+    Sits after all enrichment (Agents 7-9) and before the tradeable filter.
+    Reads every field stamped by every agent and makes unified decisions:
+
+    1. Cross-agent signal scoring — synthesizes sentinel, intel, accuracy data
+    2. Veto / boost logic — can kill bad signals or amplify high-conviction ones
+    3. Dynamic threshold adjustment — raises/lowers EV requirements per city
+    4. Position sizing override — adjusts size based on multi-agent consensus
+    5. Feedback loop — tracks which agent combos lead to wins/losses
+    6. Agent health monitoring — detects if an agent is failing/stale
+    """
+
+    def __init__(self):
+        self._city_cooldowns = {}       # city -> {'until': timestamp, 'reason': str}
+        self._agent_health = {}         # agent_name -> {'last_ok': ts, 'fail_count': int}
+        self._decision_log = []         # last N coordinator decisions
+        self._max_log = 200
+        self._cycle_count = 0
+        self._conviction_stats = {'high': 0, 'medium': 0, 'low': 0, 'vetoed': 0}
+        log.info('COORDINATOR: Agent 10 initialized — supervising all agents')
+
+    # ---- AGENT HEALTH TRACKING ----
+
+    def report_agent_status(self, agent_name, success, error_msg=None):
+        """Called after each agent runs. Tracks health over time."""
+        now = time.time()
+        if agent_name not in self._agent_health:
+            self._agent_health[agent_name] = {
+                'last_ok': 0, 'last_fail': 0,
+                'ok_count': 0, 'fail_count': 0,
+                'consecutive_fails': 0, 'status': 'unknown'
+            }
+        h = self._agent_health[agent_name]
+        if success:
+            h['last_ok'] = now
+            h['ok_count'] += 1
+            h['consecutive_fails'] = 0
+            h['status'] = 'healthy'
+        else:
+            h['last_fail'] = now
+            h['fail_count'] += 1
+            h['consecutive_fails'] += 1
+            h['last_error'] = str(error_msg)[:200] if error_msg else 'unknown'
+            if h['consecutive_fails'] >= 3:
+                h['status'] = 'degraded'
+            if h['consecutive_fails'] >= 10:
+                h['status'] = 'failing'
+
+    def get_agent_health(self):
+        """Return health status of all tracked agents."""
+        return dict(self._agent_health)
+
+    # ---- CITY COOLDOWN (feedback from PostTradeAnalyst) ----
+
+    def apply_cooldown(self, city, duration_s, reason):
+        """Put a city on cooldown — reduce or block trading for a period."""
+        self._city_cooldowns[city] = {
+            'until': time.time() + duration_s,
+            'reason': reason,
+            'applied': time.time(),
+        }
+        log.info('COORDINATOR: cooldown %s for %ds — %s', city, duration_s, reason)
+
+    def is_on_cooldown(self, city):
+        """Check if a city is currently on cooldown."""
+        cd = self._city_cooldowns.get(city)
+        if not cd:
+            return False, None
+        if time.time() > cd['until']:
+            del self._city_cooldowns[city]
+            return False, None
+        return True, cd['reason']
+
+    # ---- CROSS-AGENT SIGNAL SCORING ----
+
+    def _score_signal(self, sig):
+        """Compute a unified conviction score (0-100) from all agent data on a signal.
+
+        Weighs inputs from:
+        - sentinel_confidence (Agent 7)
+        - intel_consensus / intel_station_rating (Agent 9)
+        - accuracy track record (via intel_sigma_mult)
+        - EV and Kelly (base signal)
+        - bin-boundary proximity (intel alerts)
+        """
+        score = 50.0  # neutral baseline
+        reasons = []
+
+        # --- Sentinel data (Agent 7) ---
+        sent_conf = sig.get('sentinel_confidence', 0)
+        if sent_conf >= 80:
+            score += 15
+            reasons.append(f'sentinel_high({sent_conf})')
+        elif sent_conf >= 60:
+            score += 5
+            reasons.append(f'sentinel_ok({sent_conf})')
+        elif sent_conf > 0:
+            score -= 10
+            reasons.append(f'sentinel_low({sent_conf})')
+
+        # Trend alignment — if temp is trending toward our predicted direction
+        trend_dir = sig.get('sentinel_trend', '')
+        if trend_dir in ('rising', 'falling'):
+            # Check if trend supports our position
+            direction = sig.get('direction', '')
+            if (direction == 'above' and trend_dir == 'rising') or \
+               (direction == 'below' and trend_dir == 'falling'):
+                score += 8
+                reasons.append('trend_aligned')
+            elif (direction == 'above' and trend_dir == 'falling') or \
+                 (direction == 'below' and trend_dir == 'rising'):
+                score -= 12
+                reasons.append('trend_opposed')
+
+        # --- Intelligence Feed data (Agent 9) ---
+        consensus = sig.get('intel_consensus', 'unknown')
+        if consensus == 'strong':
+            score += 15
+            reasons.append('consensus_strong')
+        elif consensus == 'moderate':
+            score += 5
+            reasons.append('consensus_moderate')
+        elif consensus == 'weak':
+            score -= 8
+            reasons.append('consensus_weak')
+        elif consensus == 'divergent':
+            score -= 20
+            reasons.append('consensus_divergent')
+
+        # Station accuracy rating
+        rating = sig.get('intel_station_rating', 'unrated')
+        if rating == 'excellent':
+            score += 10
+            reasons.append('station_excellent')
+        elif rating == 'good':
+            score += 5
+            reasons.append('station_good')
+        elif rating == 'poor':
+            score -= 10
+            reasons.append('station_poor')
+        elif rating == 'unreliable':
+            score -= 20
+            reasons.append('station_unreliable')
+
+        # Bin-boundary proximity (from intel alerts)
+        boundary_urgency = sig.get('intel_boundary_urgency', '')
+        approaching = sig.get('intel_approaching', False)
+        if boundary_urgency == 'critical' and approaching:
+            score += 12  # High opportunity if temp is about to cross a bin edge
+            reasons.append('boundary_critical_approaching')
+        elif boundary_urgency == 'critical' and not approaching:
+            score -= 8  # Risky — near boundary but moving away
+            reasons.append('boundary_critical_retreating')
+
+        # --- Base signal quality ---
+        theo_ev = sig.get('theo_ev', 0)
+        if theo_ev >= 15:
+            score += 10
+            reasons.append(f'high_ev({theo_ev:.1f})')
+        elif theo_ev >= 10:
+            score += 5
+        elif theo_ev < 5:
+            score -= 10
+            reasons.append(f'low_ev({theo_ev:.1f})')
+
+        kelly = sig.get('kelly', 0)
+        if kelly >= 8:
+            score += 5
+            reasons.append(f'strong_kelly({kelly:.1f})')
+
+        # Clamp to 0-100
+        score = max(0, min(100, score))
+        return round(score, 1), reasons
+
+    # ---- MAIN COORDINATION: EVALUATE ALL SIGNALS ----
+
+    def evaluate(self, sigs, analyst=None):
+        """Main coordination pass. Runs after all enrichment agents.
+
+        For each signal:
+        1. Compute cross-agent conviction score
+        2. Check city cooldowns
+        3. Apply veto/boost decisions
+        4. Adjust recommended size
+        5. Log the decision
+
+        Mutates signals in-place and returns them.
+        Also sets coordinator_verdict on each signal:
+          'high_conviction', 'trade', 'reduce', 'veto'
+        """
+        self._cycle_count += 1
+        now = time.time()
+
+        # Check PostTradeAnalyst for losing cities (feedback loop)
+        if analyst:
+            try:
+                recent = analyst.analyze()
+                if isinstance(recent, list):
+                    for trade in recent:
+                        city = trade.get('city', '')
+                        pnl = trade.get('pnl', 0)
+                        if pnl < -5 and city:  # Lost more than $5 on a city
+                            on_cd, _ = self.is_on_cooldown(city)
+                            if not on_cd:
+                                self.apply_cooldown(city, 1800, f'recent_loss_pnl={pnl:.2f}')
+            except Exception as e:
+                log.debug('COORDINATOR: analyst feedback failed: %s', e)
+
+        decisions = []
+        for sig in sigs:
+            city = sig.get('city', '')
+            conviction, reasons = self._score_signal(sig)
+            sig['coordinator_conviction'] = conviction
+            sig['coordinator_reasons'] = reasons
+
+            # Check cooldown
+            on_cd, cd_reason = self.is_on_cooldown(city)
+            if on_cd:
+                sig['coordinator_verdict'] = 'cooldown'
+                sig['coordinator_note'] = f'city on cooldown: {cd_reason}'
+                sig['coordinator_size_mult'] = 0.0
+                decisions.append({'city': city, 'verdict': 'cooldown', 'conviction': conviction})
+                self._conviction_stats['vetoed'] += 1
+                continue
+
+            # Decision logic based on conviction
+            if conviction >= 75:
+                sig['coordinator_verdict'] = 'high_conviction'
+                sig['coordinator_size_mult'] = 1.5  # Boost size by 50%
+                sig['coordinator_note'] = 'all agents agree — boosted'
+                self._conviction_stats['high'] += 1
+            elif conviction >= 50:
+                sig['coordinator_verdict'] = 'trade'
+                sig['coordinator_size_mult'] = 1.0  # Normal size
+                sig['coordinator_note'] = 'acceptable signal'
+                self._conviction_stats['medium'] += 1
+            elif conviction >= 30:
+                sig['coordinator_verdict'] = 'reduce'
+                sig['coordinator_size_mult'] = 0.5  # Half size
+                sig['coordinator_note'] = 'mixed signals — reduced size'
+                self._conviction_stats['low'] += 1
+            else:
+                sig['coordinator_verdict'] = 'veto'
+                sig['coordinator_size_mult'] = 0.0
+                sig['coordinator_note'] = 'too many red flags — vetoed'
+                self._conviction_stats['vetoed'] += 1
+
+            # Intel reduce_size flag (from consensus divergence)
+            if sig.get('intel_reduce_size') and sig['coordinator_size_mult'] > 0.5:
+                sig['coordinator_size_mult'] = 0.5
+                sig['coordinator_note'] += ' | intel_reduce_override'
+
+            decisions.append({
+                'city': city,
+                'verdict': sig['coordinator_verdict'],
+                'conviction': conviction,
+                'reasons': reasons[:5],
+                'size_mult': sig['coordinator_size_mult'],
+            })
+
+        # Trim decision log
+        self._decision_log.extend(decisions)
+        if len(self._decision_log) > self._max_log:
+            self._decision_log = self._decision_log[-self._max_log:]
+
+        log.info('COORDINATOR: evaluated %d signals — %d high, %d trade, %d reduce, %d veto',
+                 len(sigs),
+                 sum(1 for d in decisions if d['verdict'] == 'high_conviction'),
+                 sum(1 for d in decisions if d['verdict'] == 'trade'),
+                 sum(1 for d in decisions if d['verdict'] == 'reduce'),
+                 sum(1 for d in decisions if d['verdict'] in ('veto', 'cooldown')))
+
+        return sigs
+
+    def get_coordinator_report(self):
+        """Full report of coordinator state for the API endpoint."""
+        return {
+            'ok': True,
+            'ts': time.time(),
+            'cycle_count': self._cycle_count,
+            'conviction_stats': dict(self._conviction_stats),
+            'agent_health': self.get_agent_health(),
+            'active_cooldowns': {
+                city: {
+                    'reason': cd['reason'],
+                    'remaining_s': round(cd['until'] - time.time()),
+                }
+                for city, cd in self._city_cooldowns.items()
+                if time.time() < cd['until']
+            },
+            'recent_decisions': self._decision_log[-30:],
+        }
+
+
 # MAIN MONITORING LOOP
 # ============================================================
 def run_monitor():
