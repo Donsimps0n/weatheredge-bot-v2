@@ -1154,6 +1154,260 @@ class IntelligenceFeed:
 
 
 
+
+class RufloSharedState:
+    """Shared memory bus for all Ruflo agents.
+
+    Every agent gets a reference to this object. They publish data to named
+    channels and subscribe to channels they care about. This enables:
+
+    1. Real-time cross-agent communication (not just signal-dict stamps)
+    2. Cross-cycle memory (persists across trade cycles)
+    3. Event system (agents can broadcast events others react to)
+    4. Strategy insights (winning patterns propagate to all agents)
+    5. Priority system (agents can request attention on specific cities)
+    """
+
+    def __init__(self):
+        # --- Named data channels (agent -> channel -> data) ---
+        self._channels = {}
+        # --- Event bus (list of events any agent can publish/read) ---
+        self._events = []
+        self._max_events = 500
+        # --- Cross-cycle memory ---
+        self._memory = {
+            'cycle_count': 0,
+            'last_cycle_ts': 0,
+            'city_stats': {},          # per-city running stats
+            'strategy_insights': [],   # winning patterns
+            'station_reputation': {},  # long-term station quality
+        }
+        # --- Priority queue (cities that need attention) ---
+        self._priority_cities = {}  # city -> {'score': float, 'reasons': [], 'ts': float}
+        # --- Agent registry ---
+        self._agents = {}  # name -> {'status': str, 'last_write': float, 'channels': []}
+        log.info('SHARED_STATE: initialized — memory bus online')
+
+    # =========== CHANNEL OPERATIONS ===========
+
+    def publish(self, agent_name, channel, data):
+        """Publish data to a named channel. Any agent can read it."""
+        key = f'{agent_name}/{channel}'
+        self._channels[key] = {
+            'data': data,
+            'ts': time.time(),
+            'agent': agent_name,
+            'channel': channel,
+        }
+        # Track agent activity
+        if agent_name not in self._agents:
+            self._agents[agent_name] = {'status': 'active', 'last_write': 0, 'channels': []}
+        self._agents[agent_name]['last_write'] = time.time()
+        if channel not in self._agents[agent_name]['channels']:
+            self._agents[agent_name]['channels'].append(channel)
+
+    def read(self, agent_name, channel):
+        """Read the latest data from a specific agent's channel.
+        Returns None if channel doesn't exist."""
+        key = f'{agent_name}/{channel}'
+        entry = self._channels.get(key)
+        if entry:
+            return entry['data']
+        return None
+
+    def read_any(self, channel):
+        """Read all agents' data for a given channel name.
+        Returns dict: {agent_name: data}"""
+        result = {}
+        for key, entry in self._channels.items():
+            if entry['channel'] == channel:
+                result[entry['agent']] = entry['data']
+        return result
+
+    def read_freshest(self, channel, max_age_s=300):
+        """Read the freshest data for a channel, ignoring stale entries."""
+        cutoff = time.time() - max_age_s
+        best = None
+        best_ts = 0
+        for key, entry in self._channels.items():
+            if entry['channel'] == channel and entry['ts'] > cutoff and entry['ts'] > best_ts:
+                best = entry['data']
+                best_ts = entry['ts']
+        return best
+
+    # =========== EVENT BUS ===========
+
+    def emit(self, agent_name, event_type, payload=None):
+        """Broadcast an event that any agent can react to."""
+        event = {
+            'ts': time.time(),
+            'agent': agent_name,
+            'type': event_type,
+            'payload': payload or {},
+        }
+        self._events.append(event)
+        if len(self._events) > self._max_events:
+            self._events = self._events[-self._max_events:]
+
+    def get_events(self, event_type=None, since_ts=0, limit=50):
+        """Get recent events, optionally filtered by type and time."""
+        filtered = self._events
+        if event_type:
+            filtered = [e for e in filtered if e['type'] == event_type]
+        if since_ts:
+            filtered = [e for e in filtered if e['ts'] > since_ts]
+        return filtered[-limit:]
+
+    # =========== CITY PRIORITY SYSTEM ===========
+
+    def boost_city_priority(self, agent_name, city, score_delta, reason):
+        """Increase a city's priority score. Multiple agents can boost."""
+        if city not in self._priority_cities:
+            self._priority_cities[city] = {'score': 0, 'reasons': [], 'ts': time.time(), 'boosters': []}
+        p = self._priority_cities[city]
+        p['score'] += score_delta
+        p['reasons'].append(f'{agent_name}: {reason}')
+        if len(p['reasons']) > 10:
+            p['reasons'] = p['reasons'][-10:]
+        if agent_name not in p['boosters']:
+            p['boosters'].append(agent_name)
+        p['ts'] = time.time()
+
+    def get_priority_cities(self, min_score=5, limit=10):
+        """Get cities sorted by priority score, above a minimum threshold."""
+        now = time.time()
+        # Decay scores older than 30 min
+        for city, p in self._priority_cities.items():
+            age = now - p['ts']
+            if age > 1800:
+                p['score'] *= 0.5
+        ranked = sorted(
+            [(c, p) for c, p in self._priority_cities.items() if p['score'] >= min_score],
+            key=lambda x: x[1]['score'], reverse=True
+        )
+        return [{'city': c, 'score': round(p['score'], 1), 'reasons': p['reasons'],
+                 'boosters': p['boosters']} for c, p in ranked[:limit]]
+
+    # =========== CROSS-CYCLE MEMORY ===========
+
+    def record_cycle(self):
+        """Called at end of each trade cycle. Increments counter."""
+        self._memory['cycle_count'] += 1
+        self._memory['last_cycle_ts'] = time.time()
+
+    def update_city_stats(self, city, key, value):
+        """Update a running stat for a city across cycles."""
+        if city not in self._memory['city_stats']:
+            self._memory['city_stats'][city] = {}
+        self._memory['city_stats'][city][key] = value
+        self._memory['city_stats'][city]['_updated'] = time.time()
+
+    def get_city_stats(self, city):
+        """Get all accumulated stats for a city."""
+        return self._memory['city_stats'].get(city, {})
+
+    def add_strategy_insight(self, agent_name, insight):
+        """Record a strategic observation any agent can learn from.
+        E.g., 'YES trades on above-bins outperforming by 12% this week'"""
+        self._memory['strategy_insights'].append({
+            'ts': time.time(),
+            'agent': agent_name,
+            'insight': insight,
+        })
+        if len(self._memory['strategy_insights']) > 100:
+            self._memory['strategy_insights'] = self._memory['strategy_insights'][-100:]
+
+    def get_strategy_insights(self, limit=20):
+        """Get recent strategy insights from all agents."""
+        return self._memory['strategy_insights'][-limit:]
+
+    def update_station_reputation(self, station_id, brier=None, freshness=None, trend_accuracy=None):
+        """Update long-term reputation metrics for a weather station."""
+        if station_id not in self._memory['station_reputation']:
+            self._memory['station_reputation'][station_id] = {
+                'brier_history': [], 'freshness_avg': 0,
+                'trend_accuracy': 0, 'overall_grade': 'unknown',
+            }
+        rep = self._memory['station_reputation'][station_id]
+        if brier is not None:
+            rep['brier_history'].append(round(brier, 4))
+            if len(rep['brier_history']) > 50:
+                rep['brier_history'] = rep['brier_history'][-50:]
+        if freshness is not None:
+            rep['freshness_avg'] = round(freshness, 1)
+        if trend_accuracy is not None:
+            rep['trend_accuracy'] = round(trend_accuracy, 2)
+        # Compute overall grade
+        avg_brier = sum(rep['brier_history']) / len(rep['brier_history']) if rep['brier_history'] else 1.0
+        if avg_brier < 0.1:
+            rep['overall_grade'] = 'A'
+        elif avg_brier < 0.2:
+            rep['overall_grade'] = 'B'
+        elif avg_brier < 0.35:
+            rep['overall_grade'] = 'C'
+        elif avg_brier < 0.5:
+            rep['overall_grade'] = 'D'
+        else:
+            rep['overall_grade'] = 'F'
+
+    def get_station_reputation(self, station_id):
+        """Get the long-term reputation for a station."""
+        return self._memory['station_reputation'].get(station_id, {})
+
+    def get_all_station_reputations(self):
+        """Get all station reputations."""
+        return dict(self._memory['station_reputation'])
+
+    # =========== AGENT REGISTRY ===========
+
+    def register_agent(self, name, role):
+        """Register an agent so others know it exists."""
+        self._agents[name] = {
+            'role': role,
+            'status': 'active',
+            'last_write': 0,
+            'channels': [],
+            'registered_at': time.time(),
+        }
+
+    def get_agent_directory(self):
+        """List all registered agents and their status."""
+        return dict(self._agents)
+
+    # =========== FULL STATE REPORT ===========
+
+    def get_state_report(self):
+        """Complete state dump for the API endpoint."""
+        now = time.time()
+        # Count active channels
+        active_channels = sum(1 for v in self._channels.values() if now - v['ts'] < 600)
+        return {
+            'ok': True,
+            'ts': now,
+            'memory': {
+                'cycle_count': self._memory['cycle_count'],
+                'last_cycle_ts': self._memory['last_cycle_ts'],
+                'cities_tracked': len(self._memory['city_stats']),
+                'strategy_insights': len(self._memory['strategy_insights']),
+                'stations_rated': len(self._memory['station_reputation']),
+            },
+            'channels': {
+                'total': len(self._channels),
+                'active': active_channels,
+                'list': [{'key': k, 'agent': v['agent'], 'channel': v['channel'],
+                          'age_s': round(now - v['ts'])}
+                         for k, v in sorted(self._channels.items(), key=lambda x: x[1]['ts'], reverse=True)[:30]],
+            },
+            'events': {
+                'total': len(self._events),
+                'recent': self._events[-15:],
+            },
+            'priority_cities': self.get_priority_cities(),
+            'agent_directory': self.get_agent_directory(),
+            'station_reputations': self.get_all_station_reputations(),
+        }
+
+
 class RufloCoordinator:
     """Agent 10: Meta-agent that supervises all other agents.
 
