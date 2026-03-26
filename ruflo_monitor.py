@@ -772,6 +772,387 @@ class AccuracyTracker:
         return (time.time() - self._last_resolution_check) >= self.resolution_check_interval
 
 
+
+class IntelligenceFeed:
+    """Phase 3: Full intelligence feed.
+
+    1. Dynamic confidence — adjusts sigma based on AccuracyTracker's per-station
+       Brier scores. Proven-accurate stations get tighter sigma (→ sharper predictions),
+       unreliable stations get wider sigma (→ more conservative).
+    2. Bin-boundary alerts — flags signals where current temp is within 5°F of a
+       market bin boundary, with urgency levels and ETA to crossing.
+    3. Multi-source consensus — pulls Open-Meteo forecasts (free, no key) as a
+       second source, compares with primary forecast, flags disagreements.
+    """
+
+    OPEN_METEO_URL = 'https://api.open-meteo.com/v1/forecast'
+
+    # lat/lon for each city (matching WeatherSentinel's 19 stations)
+    CITY_COORDS = {
+        'Atlanta':       (33.75, -84.39),
+        'Los Angeles':   (33.94, -118.41),
+        'San Francisco': (37.77, -122.42),
+        'Toronto':       (43.68, -79.63),
+        'Warsaw':        (52.17, 20.97),
+        'Miami':         (25.79, -80.29),
+        'Chicago':       (41.98, -87.90),
+        'Seattle':       (47.45, -122.31),
+        'Madrid':        (40.47, -3.56),
+        'Paris':         (49.01, 2.55),
+        'Tel Aviv':      (32.01, 34.88),
+        'Istanbul':      (40.98, 28.82),
+        'Tokyo':         (35.55, 139.78),
+        'Seoul':         (37.46, 126.44),
+        'Buenos Aires':  (-34.82, -58.54),
+        'Sao Paulo':     (-23.43, -46.47),
+        'Singapore':     (1.36, 103.99),
+        'Beijing':       (40.08, 116.58),
+        'Shanghai':      (31.14, 121.81),
+    }
+
+    def __init__(self):
+        self._consensus_cache = {}
+        self._consensus_ts = 0
+        self._consensus_interval = 1800  # refresh every 30 min
+        self._sigma_adjustments = {}
+        self._alerts_cache = {}
+        log.info('INTEL_FEED: initialized for %d cities', len(self.CITY_COORDS))
+
+    # ---- 1. DYNAMIC CONFIDENCE / SIGMA ADJUSTMENT ----
+
+    def compute_sigma_adjustments(self, accuracy_tracker):
+        """Use AccuracyTracker station stats to compute per-station sigma multipliers.
+
+        Stations with low Brier scores (accurate) → multiplier < 1.0 (tighter sigma)
+        Stations with high Brier scores (inaccurate) → multiplier > 1.0 (wider sigma)
+        New stations with no data → multiplier = 1.0 (no change)
+        """
+        adjustments = {}
+        try:
+            report = accuracy_tracker.get_accuracy_report()
+            rankings = report.get('station_rankings', [])
+            if not rankings:
+                self._sigma_adjustments = {}
+                return {}
+
+            # Collect Brier scores
+            brier_scores = {}
+            for station in rankings:
+                sid = station.get('station_id', '')
+                brier = station.get('brier_score')
+                days = station.get('days_tracked', 0)
+                if brier is not None and days >= 2:
+                    brier_scores[sid] = brier
+
+            if not brier_scores:
+                self._sigma_adjustments = {}
+                return {}
+
+            # Median Brier as baseline
+            sorted_brier = sorted(brier_scores.values())
+            mid = len(sorted_brier) // 2
+            median_brier = sorted_brier[mid] if len(sorted_brier) % 2 else (sorted_brier[mid-1] + sorted_brier[mid]) / 2
+
+            for sid, brier in brier_scores.items():
+                if median_brier == 0:
+                    multiplier = 1.0
+                else:
+                    # ratio: brier/median — below median = good, above = bad
+                    ratio = brier / median_brier
+                    # Clamp to [0.6, 1.5] range
+                    # ratio < 1 = better than median → tighter sigma
+                    # ratio > 1 = worse than median → wider sigma
+                    multiplier = max(0.6, min(1.5, 0.5 + ratio * 0.5))
+                adjustments[sid] = {
+                    'multiplier': round(multiplier, 3),
+                    'brier': round(brier, 4),
+                    'median_brier': round(median_brier, 4),
+                    'rating': 'excellent' if multiplier < 0.75 else ('good' if multiplier < 0.95 else ('average' if multiplier < 1.1 else ('poor' if multiplier < 1.3 else 'unreliable')))
+                }
+        except Exception as e:
+            log.warning('INTEL_FEED: sigma adjustment computation failed: %s', e)
+
+        self._sigma_adjustments = adjustments
+        return adjustments
+
+    def get_sigma_multiplier(self, station_id):
+        """Get the sigma multiplier for a station. Returns 1.0 if no data."""
+        adj = self._sigma_adjustments.get(station_id, {})
+        return adj.get('multiplier', 1.0)
+
+    def adjust_signal_sigma(self, sig):
+        """Adjust a signal's sigma using the station's dynamic multiplier.
+        Mutates the signal dict in-place and returns it."""
+        sid = sig.get('sentinel_station', '')
+        if not sid:
+            return sig
+        mult = self.get_sigma_multiplier(sid)
+        if 'sigma' in sig:
+            old_sigma = sig['sigma']
+            sig['sigma'] = round(old_sigma * mult, 3)
+            sig['intel_sigma_mult'] = mult
+            sig['intel_sigma_old'] = old_sigma
+        adj = self._sigma_adjustments.get(sid, {})
+        sig['intel_station_rating'] = adj.get('rating', 'unrated')
+        return sig
+
+    # ---- 2. BIN-BOUNDARY ALERTS ----
+
+    def generate_alerts(self, sentinel, sigs):
+        """Generate bin-boundary alerts for all active signals.
+        Uses the sentinel's check_bin_boundaries() and enriches with market context."""
+        alerts = []
+        seen_cities = set()
+        for sig in sigs:
+            city = sig.get('city', '')
+            if city in seen_cities:
+                continue
+            seen_cities.add(city)
+
+            # Extract bin boundaries from the signal's threshold
+            threshold = sig.get('threshold')
+            if threshold is None:
+                continue
+            # Build approximate bin edges (Polymarket typically uses 5°F bins)
+            threshold_f = threshold if sig.get('unit') == 'F' else (threshold * 9/5 + 32)
+            # Standard Polymarket temp bins: ..., 55-60, 60-65, 65-70, 70-75, 75-80, ...
+            base = int(threshold_f // 5) * 5
+            bins = [base - 5, base, base + 5, base + 10]
+
+            city_alerts = sentinel.check_bin_boundaries(city, bins)
+            for alert in city_alerts:
+                alert['city'] = city
+                alert['market_question'] = sig.get('question', '')
+                alert['condition_id'] = sig.get('condition_id', '')
+                alerts.append(alert)
+
+        # Sort by urgency (critical first)
+        urgency_order = {'critical': 0, 'high': 1, 'medium': 2, 'low': 3}
+        alerts.sort(key=lambda a: urgency_order.get(a.get('urgency', 'low'), 4))
+        self._alerts_cache = {'alerts': alerts, 'ts': time.time(), 'count': len(alerts)}
+        return alerts
+
+    # ---- 3. MULTI-SOURCE CONSENSUS ----
+
+    def fetch_open_meteo_forecasts(self):
+        """Fetch today's high temp forecast from Open-Meteo for all 19 cities.
+        Returns dict: {city: {'high_c': float, 'high_f': float, 'source': 'open-meteo'}}"""
+        forecasts = {}
+        # Batch by building a multi-location request (Open-Meteo supports this)
+        lats = []
+        lons = []
+        cities_ordered = sorted(self.CITY_COORDS.keys())
+        for city in cities_ordered:
+            lat, lon = self.CITY_COORDS[city]
+            lats.append(str(lat))
+            lons.append(str(lon))
+
+        try:
+            params = {
+                'latitude': ','.join(lats),
+                'longitude': ','.join(lons),
+                'daily': 'temperature_2m_max,temperature_2m_min',
+                'timezone': 'auto',
+                'forecast_days': 2,
+            }
+            resp = requests.get(self.OPEN_METEO_URL, params=params, timeout=15)
+            resp.raise_for_status()
+            data = resp.json()
+
+            # Open-Meteo returns array when multiple locations
+            results = data if isinstance(data, list) else [data]
+            for i, city in enumerate(cities_ordered):
+                if i >= len(results):
+                    break
+                daily = results[i].get('daily', {})
+                highs = daily.get('temperature_2m_max', [])
+                lows = daily.get('temperature_2m_min', [])
+                if highs:
+                    today_high_c = highs[0]
+                    tomorrow_high_c = highs[1] if len(highs) > 1 else None
+                    today_low_c = lows[0] if lows else None
+                    forecasts[city] = {
+                        'high_c': round(today_high_c, 1),
+                        'high_f': round(today_high_c * 9/5 + 32, 1),
+                        'low_c': round(today_low_c, 1) if today_low_c is not None else None,
+                        'tomorrow_high_c': round(tomorrow_high_c, 1) if tomorrow_high_c is not None else None,
+                        'tomorrow_high_f': round(tomorrow_high_c * 9/5 + 32, 1) if tomorrow_high_c is not None else None,
+                        'source': 'open-meteo',
+                    }
+        except Exception as e:
+            log.warning('INTEL_FEED: Open-Meteo fetch failed: %s', e)
+
+        return forecasts
+
+    def build_consensus(self, sigs, force=False):
+        """Compare primary forecast (from signals) with Open-Meteo.
+        Returns consensus data per city: agreement level, spread, recommendation."""
+        now = time.time()
+        if not force and (now - self._consensus_ts) < self._consensus_interval and self._consensus_cache:
+            return self._consensus_cache
+
+        om_forecasts = self.fetch_open_meteo_forecasts()
+        consensus = {}
+
+        # Extract primary forecasts from signals
+        primary_by_city = {}
+        for sig in sigs:
+            city = sig.get('city', '')
+            if city and city not in primary_by_city:
+                fcast = sig.get('forecast')
+                if fcast is not None:
+                    primary_by_city[city] = {
+                        'temp_c': fcast,
+                        'temp_f': round(fcast * 9/5 + 32, 1),
+                        'source': 'primary',
+                    }
+
+        for city in set(list(primary_by_city.keys()) + list(om_forecasts.keys())):
+            primary = primary_by_city.get(city)
+            om = om_forecasts.get(city)
+
+            if primary and om:
+                p_c = primary['temp_c']
+                o_c = om['high_c']
+                spread_c = round(abs(p_c - o_c), 1)
+                spread_f = round(spread_c * 9/5, 1)
+                avg_c = round((p_c + o_c) / 2, 1)
+                avg_f = round(avg_c * 9/5 + 32, 1)
+
+                if spread_c < 1.0:
+                    agreement = 'strong'
+                    recommendation = 'high_confidence'
+                elif spread_c < 2.0:
+                    agreement = 'moderate'
+                    recommendation = 'normal'
+                elif spread_c < 3.5:
+                    agreement = 'weak'
+                    recommendation = 'widen_sigma'
+                else:
+                    agreement = 'divergent'
+                    recommendation = 'reduce_size'
+
+                consensus[city] = {
+                    'primary_c': p_c,
+                    'primary_f': primary['temp_f'],
+                    'open_meteo_c': o_c,
+                    'open_meteo_f': om['high_f'],
+                    'spread_c': spread_c,
+                    'spread_f': spread_f,
+                    'consensus_c': avg_c,
+                    'consensus_f': avg_f,
+                    'agreement': agreement,
+                    'recommendation': recommendation,
+                    'sources': 2,
+                }
+            elif primary:
+                consensus[city] = {
+                    'primary_c': primary['temp_c'],
+                    'primary_f': primary['temp_f'],
+                    'agreement': 'single_source',
+                    'recommendation': 'normal',
+                    'sources': 1,
+                }
+            elif om:
+                consensus[city] = {
+                    'open_meteo_c': om['high_c'],
+                    'open_meteo_f': om['high_f'],
+                    'agreement': 'single_source',
+                    'recommendation': 'normal',
+                    'sources': 1,
+                }
+
+        self._consensus_cache = consensus
+        self._consensus_ts = now
+        return consensus
+
+    def enrich_signals_phase3(self, sigs, sentinel, accuracy_tracker):
+        """Full Phase 3 enrichment: dynamic sigma, alerts, consensus.
+        Call AFTER sentinel.enrich_signals(sigs)."""
+        # 1. Refresh sigma adjustments
+        self.compute_sigma_adjustments(accuracy_tracker)
+
+        # 2. Build consensus
+        consensus = self.build_consensus(sigs)
+
+        # 3. Generate alerts
+        alerts = self.generate_alerts(sentinel, sigs)
+
+        # 4. Enrich each signal
+        alert_by_city = {}
+        for a in alerts:
+            city = a.get('city', '')
+            if city not in alert_by_city:
+                alert_by_city[city] = []
+            alert_by_city[city].append(a)
+
+        for sig in sigs:
+            # Dynamic sigma
+            self.adjust_signal_sigma(sig)
+
+            city = sig.get('city', '')
+
+            # Consensus data
+            city_consensus = consensus.get(city, {})
+            sig['intel_consensus'] = city_consensus.get('agreement', 'unknown')
+            sig['intel_spread_c'] = city_consensus.get('spread_c', 0)
+            sig['intel_recommendation'] = city_consensus.get('recommendation', 'normal')
+            if city_consensus.get('consensus_c') is not None:
+                sig['intel_consensus_temp_c'] = city_consensus['consensus_c']
+
+            # Apply consensus-based sigma widening
+            rec = city_consensus.get('recommendation', 'normal')
+            if rec == 'widen_sigma' and 'sigma' in sig:
+                sig['sigma'] = round(sig['sigma'] * 1.15, 3)
+                sig['intel_sigma_consensus_adj'] = 1.15
+            elif rec == 'reduce_size':
+                sig['intel_reduce_size'] = True
+
+            # Bin-boundary alerts
+            city_alerts = alert_by_city.get(city, [])
+            if city_alerts:
+                sig['intel_bin_alerts'] = len(city_alerts)
+                top = city_alerts[0]
+                sig['intel_nearest_boundary'] = top.get('boundary_f')
+                sig['intel_boundary_distance'] = top.get('distance_f')
+                sig['intel_boundary_urgency'] = top.get('urgency')
+                sig['intel_approaching'] = top.get('approaching', False)
+
+        return sigs
+
+    def get_intelligence_report(self, sigs, sentinel, accuracy_tracker):
+        """Full intelligence report combining all Phase 3 data."""
+        consensus = self.build_consensus(sigs)
+        alerts = self._alerts_cache.get('alerts', [])
+        sigma_adj = self._sigma_adjustments
+
+        # Summary stats
+        n_strong = sum(1 for c in consensus.values() if c.get('agreement') == 'strong')
+        n_divergent = sum(1 for c in consensus.values() if c.get('agreement') == 'divergent')
+        n_alerts_critical = sum(1 for a in alerts if a.get('urgency') == 'critical')
+        n_alerts_high = sum(1 for a in alerts if a.get('urgency') == 'high')
+        n_rated = len(sigma_adj)
+        n_excellent = sum(1 for v in sigma_adj.values() if v.get('rating') == 'excellent')
+
+        return {
+            'ok': True,
+            'ts': time.time(),
+            'summary': {
+                'consensus_cities': len(consensus),
+                'strong_agreement': n_strong,
+                'divergent': n_divergent,
+                'critical_alerts': n_alerts_critical,
+                'high_alerts': n_alerts_high,
+                'total_alerts': len(alerts),
+                'stations_rated': n_rated,
+                'excellent_stations': n_excellent,
+            },
+            'consensus': consensus,
+            'alerts': alerts[:20],  # Top 20 most urgent
+            'sigma_adjustments': sigma_adj,
+        }
+
+
 # MAIN MONITORING LOOP
 # ============================================================
 def run_monitor():
