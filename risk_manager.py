@@ -312,3 +312,11 @@ def update_leakage_ratchet(
     )
 
     return max(0, ratchet)
+
+
+MAX_POSITION_USD = 10.0
+
+def apply_size_cap(kelly_size, bankroll):
+    cap = min(kelly_size, bankroll * 0.05, MAX_POSITION_USD)
+    import logging; logging.getLogger(__name__).info("SIZE_CAP: Kelly=%.2f -> %.2f", kelly_size, cap)
+    return max(0.5, cap)
