@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-WeatherEdge Ruflo Monitor Ñ runs as daemon alongside the bot.
+WeatherEdge Ruflo Monitor - runs as daemon alongside the bot.
 4 agents: pre-trade validator, position monitor, post-trade analyst, market scanner.
 """
 import time, requests, json, logging, os
@@ -14,7 +14,7 @@ POLYMARKET_DATA = 'https://data-api.polymarket.com'
 WALLET = '0xE2FB305bE360286808e5ffa2923B70d9014a37BE'
 
 # ============================================================
-# AGENT 1 Ñ PRE-TRADE SIGNAL VALIDATOR
+# AGENT 1 - PRE-TRADE SIGNAL VALIDATOR
 # ============================================================
 class PreTradeValidator:
     """Validates every signal before the bot is allowed to place a trade."""
@@ -58,7 +58,7 @@ class PreTradeValidator:
         return True, ' | '.join(checks)
 
 # ============================================================
-# AGENT 2 Ñ POSITION MONITOR
+# AGENT 2 - POSITION MONITOR
 # ============================================================
 class PositionMonitor:
     """Monitors open positions every 5 min, applies smart exit rules."""
@@ -94,16 +94,16 @@ class PositionMonitor:
                         'reason': f'<2h to resolution, value at {ratio*100:.0f}% of entry',
                         'entry': entry, 'current': current, 'mins_left': mins_left})
 
-                # RULE B: EV decay (would need model check Ñ flag for now)
+                # RULE B: EV decay (would need model check - flag for now)
                 elif ratio < 0.15:
                     alerts.append({'alert': 'EXIT_EV_DECAY', 'market': title,
-                        'reason': f'value at only {ratio*100:.0f}% of entry Ñ likely model was wrong',
+                        'reason': f'value at only {ratio*100:.0f}% of entry - likely model was wrong',
                         'entry': entry, 'current': current})
 
                 # RULE C: profit take
                 elif ratio > 2.0:
                     alerts.append({'alert': 'PROFIT_TAKE', 'market': title,
-                        'reason': f'value at {ratio*100:.0f}% of entry Ñ take 50% profit',
+                        'reason': f'value at {ratio*100:.0f}% of entry - take 50% profit',
                         'entry': entry, 'current': current})
 
         except Exception as e:
@@ -111,7 +111,7 @@ class PositionMonitor:
         return alerts
 
 # ============================================================
-# AGENT 3 Ñ POST-TRADE ANALYST
+# AGENT 3 - POST-TRADE ANALYST
 # ============================================================
 class PostTradeAnalyst:
     """Records and analyzes each trade outcome."""
@@ -136,10 +136,10 @@ class PostTradeAnalyst:
             win_rate = wins / len(last10)
             log.info(f'POST_TRADE: last {len(last10)} trades WR={win_rate:.0%} PNL=${total_pnl:.2f}')
             if win_rate < 0.40:
-                log.warning('ALERT: rolling win rate < 40% Ñ consider pausing bot')
+                log.warning('ALERT: rolling win rate < 40% - consider pausing bot')
 
 # ============================================================
-# AGENT 4 Ñ MARKET INTELLIGENCE SCANNER
+# AGENT 4 - MARKET INTELLIGENCE SCANNER
 # ============================================================
 class MarketScanner:
     """Scans and ranks markets by true edge quality at 00Z/12Z."""
