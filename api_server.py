@@ -39,7 +39,8 @@ try:
                                YESHarvester as RufloYESHarvester,
                                WeatherSentinel as RufloWeatherSentinel,
                                      AccuracyTracker as RufloAccuracyTracker,
-                                     IntelligenceFeed as RufloIntelligenceFeed)
+                                     IntelligenceFeed as RufloIntelligenceFeed,
+                                     RufloCoordinator as RufloCoordinatorAgent)
     _ruflo_validator = PreTradeValidator()
     _ruflo_position_monitor = RufloPositionMonitor()
     _ruflo_analyst = PostTradeAnalyst()
@@ -49,8 +50,9 @@ try:
     _ruflo_sentinel = RufloWeatherSentinel()
     _ruflo_accuracy = RufloAccuracyTracker()
     _ruflo_intel = RufloIntelligenceFeed()
+    _ruflo_coordinator = RufloCoordinatorAgent()
     RUFLO_AVAILABLE = True
-    logger.info("Ruflo agents loaded: Validator, PositionMonitor, Analyst, Scanner, NOHarvester, YESHarvester, WeatherSentinel, AccuracyTracker, IntelligenceFeed")
+    logger.info("Ruflo agents loaded: Validator, PositionMonitor, Analyst, Scanner, NOHarvester, YESHarvester, WeatherSentinel, AccuracyTracker, IntelligenceFeed, Coordinator")
 except ImportError:
     RUFLO_AVAILABLE = False
     logger.warning("ruflo_monitor not available - running without Ruflo agents")
@@ -835,6 +837,18 @@ def get_intelligence():
         logger.error("intelligence report error: %s", e)
         return jsonify({"ok": False, "error": str(e)}), 500
 
+@app.route("/api/coordinator")
+def get_coordinator():
+    """Agent 10: Coordinator status - agent health, decisions, cooldowns."""
+    if not RUFLO_AVAILABLE:
+        return jsonify({"ok": False, "error": "Coordinator not available"}), 503
+    try:
+        report = _ruflo_coordinator.get_coordinator_report()
+        return jsonify(report)
+    except Exception as e:
+        logger.error("coordinator report error: %s", e)
+        return jsonify({"ok": False, "error": str(e)}), 500
+
 @app.route("/api/signals")
 def get_signals():
     """Generate trading signals from weather markets + forecasts, cached 5 min."""
@@ -1086,8 +1100,10 @@ def _run_auto_trade_cycle():
                 if _ruflo_sentinel.needs_poll():
                     _ruflo_sentinel.poll()
                 _ruflo_sentinel.enrich_signals(sigs)
+                _ruflo_coordinator.report_agent_status('sentinel', True)
             except Exception as e:
                 logger.warning("Sentinel enrich failed: %s", e)
+                _ruflo_coordinator.report_agent_status('sentinel', False, e)
 
         # Agent 8: AccuracyTracker - log predictions and check resolutions
         if RUFLO_AVAILABLE:
@@ -1095,22 +1111,36 @@ def _run_auto_trade_cycle():
                 _ruflo_accuracy.log_predictions(sigs, _ruflo_sentinel)
                 if _ruflo_accuracy.needs_resolution_check():
                     _ruflo_accuracy.check_resolutions()
+                _ruflo_coordinator.report_agent_status('accuracy_tracker', True)
             except Exception as e:
                 logger.warning("AccuracyTracker cycle failed: %s", e)
+                _ruflo_coordinator.report_agent_status('accuracy_tracker', False, e)
 
         # Agent 9: IntelligenceFeed - Phase 3 enrichment (dynamic sigma, consensus, alerts)
         if RUFLO_AVAILABLE:
             try:
                 _ruflo_intel.enrich_signals_phase3(sigs, _ruflo_sentinel, _ruflo_accuracy)
+                _ruflo_coordinator.report_agent_status('intelligence_feed', True)
             except Exception as e:
                 logger.warning("IntelligenceFeed cycle failed: %s", e)
+                _ruflo_coordinator.report_agent_status('intelligence_feed', False, e)
+
+        # Agent 10: RufloCoordinator - cross-agent evaluation and unified decisions
+        if RUFLO_AVAILABLE:
+            try:
+                _ruflo_coordinator.evaluate(sigs, _ruflo_analyst)
+                _ruflo_coordinator.report_agent_status('coordinator', True)
+            except Exception as e:
+                logger.warning("Coordinator evaluate failed: %s", e)
+                _ruflo_coordinator.report_agent_status('coordinator', False, e)
 
         # Filter for tradeable signals
         tradeable = [s for s in sigs 
                      if s.get("theo_ev", 0) >= cfg["min_ev"]
                      and s.get("kelly", 0) >= cfg["min_kelly"]
                      and s.get("signal") in ("BUY YES", "BUY NO")
-                     and s.get("tokens")]
+                     and s.get("tokens")
+                     and s.get("coordinator_verdict", "trade") not in ("veto", "cooldown")]
         tradeable.sort(key=lambda s: s["theo_ev"], reverse=True)
         # Ruflo Agent 4: re-rank by edge*confidence from MarketScanner
         if RUFLO_AVAILABLE and tradeable:
@@ -1181,7 +1211,8 @@ def _run_auto_trade_cycle():
             # Size = dollars to spend / price = number of shares
             # Polymarket min order is $1, so ensure size * price >= 1
             import math
-            spend = max(1.0, cfg["max_size"])  # at least $1
+            _coord_mult = sig.get("coordinator_size_mult", 1.0)
+            spend = max(1.0, cfg["max_size"] * _coord_mult)  # coordinator-adjusted size
             size = math.ceil(spend / price)
             size = max(1, size)
             trade_info = {
