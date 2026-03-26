@@ -116,20 +116,20 @@ class PositionMonitor:
                 grace = 25 if is_cheap else 10
                 in_grace = mins_held < grace
 
-                # RULE A: time exit Ã¢ÂÂ only after grace; tighter ratio so spread
+                # RULE A: time exit ÃÂ¢ÃÂÃÂ only after grace; tighter ratio so spread
                 # noise (up to ~50%) doesn't trigger a premature exit
                 if not in_grace and mins_left < 120 and ratio < 0.35:
                     alerts.append({'alert': 'EXIT_TIME', 'market': title,
                         'reason': f'<2h to resolution, value at {ratio*100:.0f}% of entry (held {mins_held:.0f}m)',
                         'entry': entry, 'current': current, 'mins_left': mins_left})
 
-                # RULE B: EV decay stop-loss Ã¢ÂÂ only after grace period
+                # RULE B: EV decay stop-loss ÃÂ¢ÃÂÃÂ only after grace period
                 elif not in_grace and ratio < 0.15:
                     alerts.append({'alert': 'EXIT_EV_DECAY', 'market': title,
                         'reason': f'value at only {ratio*100:.0f}% of entry after {mins_held:.0f}m - model wrong',
                         'entry': entry, 'current': current})
 
-                # RULE C: profit take Ã¢ÂÂ fires immediately, no grace needed
+                # RULE C: profit take ÃÂ¢ÃÂÃÂ fires immediately, no grace needed
                 elif ratio > 2.0:
                     alerts.append({'alert': 'PROFIT_TAKE', 'market': title,
                         'reason': f'value at {ratio*100:.0f}% of entry - take 50% profit',
@@ -213,8 +213,8 @@ class NOHarvester:
       - jangsunjuu  (#7,  $56K profit,  25 trades,  88% WR)
       - ColdMath    (#2,  $80K profit, 5971 trades, 82% WR)
 
-    When a temperature bin is clearly wrong â both our model AND the market
-    price YES at <= 10% â buying NO at 90-98c is near-guaranteed profit.
+    When a temperature bin is clearly wrong Ã¢ÂÂ both our model AND the market
+    price YES at <= 10% Ã¢ÂÂ buying NO at 90-98c is near-guaranteed profit.
     The bin won't hit; NO resolves to $1.  Each trade earns 2-10% on ~$25,
     deployed across 10-20 bins per cycle: low-risk, consistent daily yield.
     """
@@ -248,7 +248,7 @@ class NOHarvester:
             if no_price < self.min_no_price:
                 continue   # NO not priced high enough
             if our_prob > self.max_our_prob:
-                continue   # Our model still thinks YES is plausible â skip
+                continue   # Our model still thinks YES is plausible Ã¢ÂÂ skip
 
             # Must have a NO token to trade
             no_token_id = None
@@ -259,7 +259,7 @@ class NOHarvester:
             if not no_token_id:
                 continue
 
-            cond_key = no_token_id  # use token_id â always unique & non-empty
+            cond_key = no_token_id  # use token_id Ã¢ÂÂ always unique & non-empty
             if cond_key in self._seen:
                 continue
 
@@ -297,16 +297,16 @@ class NOHarvester:
 
 class YESHarvester:
     """Scans ALL weather signals for near-certain YES opportunities where the
-    correct bin is highly likely to resolve YES but still priced at 92â98c.
+    correct bin is highly likely to resolve YES but still priced at 92Ã¢ÂÂ98c.
     Symmetric mirror of NOHarvester.
 
-    Strategy: When market prices YES at â¥0.92 AND our model also agrees
-    (our_prob â¥ 88%), the expected return is 2â9% with very high confidence.
+    Strategy: When market prices YES at Ã¢ÂÂ¥0.92 AND our model also agrees
+    (our_prob Ã¢ÂÂ¥ 88%), the expected return is 2Ã¢ÂÂ9% with very high confidence.
     This is the 'right-bin certainty' edge used by Handsanitizer23 (#5 $68K)
-    and Hans323 (#3 $80K) â we capture it at lower size but same edge logic.
+    and Hans323 (#3 $80K) Ã¢ÂÂ we capture it at lower size but same edge logic.
 
     Return per trade:  (1.0 - yes_price) / yes_price * 100
-      e.g., YES at 0.92 â ~8.7% | YES at 0.95 â ~5.3% | YES at 0.98 â ~2.0%
+      e.g., YES at 0.92 Ã¢ÂÂ ~8.7% | YES at 0.95 Ã¢ÂÂ ~5.3% | YES at 0.98 Ã¢ÂÂ ~2.0%
     """
     def __init__(self):
         self.min_yes_price = 0.92   # Only trade when YES >= 92c
@@ -336,7 +336,7 @@ class YESHarvester:
                     break
             if not yes_token_id:
                 continue
-            cond_key = yes_token_id  # use token_id â always unique & non-empty
+            cond_key = yes_token_id  # use token_id Ã¢ÂÂ always unique & non-empty
             if cond_key in self._seen:
                 continue
             expected_return_pct = round((1.0 - yes_price) / yes_price * 100, 1)
@@ -356,7 +356,7 @@ class YESHarvester:
                 'confidence': 4,
             })
             city_counts[city] = city_counts.get(city, 0) + 1
-            self._seen.add(cond_key)  # dedup â never re-enter same token
+            self._seen.add(cond_key)  # dedup Ã¢ÂÂ never re-enter same token
         opps.sort(key=lambda x: x['yes_price'], reverse=False)  # cheapest YES first = highest return
         if opps:
             log.info('YES_HARVESTER: %d opportunities | top=%s YES=%.3f exp=+%.1f%%',
@@ -535,6 +535,241 @@ class WeatherSentinel:
 
     def get_high_confidence_cities(self, min_confidence=60.0):
         return [self.STATIONS[sid] for sid, conf in self._confidence.items() if conf >= min_confidence]
+
+
+
+# ============================================================
+# AGENT 8 - ACCURACY TRACKER (Prediction vs Outcome Logger)
+# ============================================================
+class AccuracyTracker:
+    """Logs predictions each cycle, checks market resolutions, and builds
+    per-station accuracy scores over time.
+
+    Storage: JSON file persisted to disk. Survives restarts.
+    Tracks: prediction logs, resolution outcomes, per-station stats.
+    """
+
+    STORE_PATH = os.environ.get('ACCURACY_STORE', '/tmp/accuracy_store.json')
+    POLYMARKET_CLOB = 'https://clob.polymarket.com'
+
+    def __init__(self):
+        self._predictions = []
+        self._resolutions = {}
+        self._station_stats = {}
+        self._last_resolution_check = 0
+        self.resolution_check_interval = 1800  # 30 min
+        self._load_store()
+        log.info('ACCURACY_TRACKER: initialized | %d predictions | %d resolutions | %d stations tracked',
+                 len(self._predictions), len(self._resolutions), len(self._station_stats))
+
+    # -- Persistence --
+    def _load_store(self):
+        try:
+            if os.path.exists(self.STORE_PATH):
+                with open(self.STORE_PATH, 'r') as f:
+                    data = json.load(f)
+                self._predictions = data.get('predictions', [])
+                self._resolutions = data.get('resolutions', {})
+                self._station_stats = data.get('station_stats', {})
+                log.info('ACCURACY_TRACKER: loaded store from %s', self.STORE_PATH)
+        except Exception as e:
+            log.warning('ACCURACY_TRACKER: failed to load store: %s', e)
+
+    def _save_store(self):
+        try:
+            data = {
+                'predictions': self._predictions[-5000:],
+                'resolutions': self._resolutions,
+                'station_stats': self._station_stats,
+                'saved_at': datetime.now(timezone.utc).isoformat(),
+            }
+            with open(self.STORE_PATH, 'w') as f:
+                json.dump(data, f)
+        except Exception as e:
+            log.warning('ACCURACY_TRACKER: failed to save store: %s', e)
+
+    # -- Prediction logging --
+    def log_predictions(self, sigs, sentinel=None):
+        """Log predictions from current cycle signals."""
+        now = datetime.now(timezone.utc)
+        today_str = now.strftime('%Y-%m-%d')
+        cycle_ts = now.isoformat()
+        logged = 0
+        for sig in sigs:
+            city = sig.get('city', '')
+            condition_id = sig.get('condition_id', '')
+            if not city or not condition_id:
+                continue
+            # Deduplicate: skip if we already logged this condition_id today
+            already = any(
+                p['condition_id'] == condition_id and p['date'] == today_str
+                for p in self._predictions[-200:]
+            )
+            if already:
+                continue
+            pred = {
+                'ts': cycle_ts,
+                'date': today_str,
+                'city': city,
+                'condition_id': condition_id,
+                'question': sig.get('question', '')[:100],
+                'direction': sig.get('direction', ''),
+                'threshold': sig.get('threshold'),
+                'our_prob': sig.get('our_prob', 0),
+                'market_price': sig.get('market_price', 0),
+                'forecast': sig.get('forecast'),
+                'signal': sig.get('signal', ''),
+                'ev': sig.get('theo_ev', 0),
+            }
+            # Add sentinel data if available
+            station = sig.get('sentinel_station', '')
+            if station:
+                pred['station'] = station
+                pred['sentinel_confidence'] = sig.get('sentinel_confidence', 0)
+                pred['sentinel_trend'] = sig.get('sentinel_trend', '')
+                pred['sentinel_temp_f'] = sig.get('sentinel_current_f')
+                pred['sentinel_temp_c'] = sig.get('sentinel_current_c')
+                pred['sentinel_rate_f_hr'] = sig.get('sentinel_rate_f_hr', 0)
+            self._predictions.append(pred)
+            logged += 1
+        if len(self._predictions) > 5000:
+            self._predictions = self._predictions[-5000:]
+        if logged > 0:
+            log.info('ACCURACY_TRACKER: logged %d predictions for %s', logged, today_str)
+            self._save_store()
+        return logged
+
+    # -- Resolution checking --
+    def check_resolutions(self):
+        """Check Polymarket for resolved markets and score predictions."""
+        now = time.time()
+        if now - self._last_resolution_check < self.resolution_check_interval:
+            return 0
+        self._last_resolution_check = now
+        unresolved_ids = set()
+        for pred in self._predictions:
+            cid = pred.get('condition_id', '')
+            if cid and cid not in self._resolutions:
+                unresolved_ids.add(cid)
+        if not unresolved_ids:
+            return 0
+        newly_resolved = 0
+        for cid in list(unresolved_ids)[:20]:
+            try:
+                resp = requests.get(f'{self.POLYMARKET_CLOB}/markets/{cid}', timeout=10)
+                if resp.status_code != 200:
+                    continue
+                mkt_data = resp.json()
+                resolved = mkt_data.get('resolved', False)
+                if not resolved:
+                    continue
+                outcome = mkt_data.get('outcome', '')
+                outcome_bool = outcome.lower() == 'yes' if isinstance(outcome, str) else bool(outcome)
+                self._resolutions[cid] = {
+                    'outcome': 'YES' if outcome_bool else 'NO',
+                    'outcome_prob': 100.0 if outcome_bool else 0.0,
+                    'resolved_at': datetime.now(timezone.utc).isoformat(),
+                    'question': mkt_data.get('question', '')[:100],
+                }
+                newly_resolved += 1
+            except Exception as e:
+                log.debug('ACCURACY_TRACKER: resolution check failed for %s: %s', cid[:12], e)
+        if newly_resolved > 0:
+            log.info('ACCURACY_TRACKER: %d markets newly resolved', newly_resolved)
+            self._score_predictions()
+            self._save_store()
+        return newly_resolved
+
+    # -- Scoring --
+    def _score_predictions(self):
+        """Recalculate per-station accuracy stats from resolved predictions."""
+        stats = {}
+        for pred in self._predictions:
+            cid = pred.get('condition_id', '')
+            if cid not in self._resolutions:
+                continue
+            res = self._resolutions[cid]
+            station = pred.get('station', 'UNKNOWN')
+            city = pred.get('city', '')
+            if station not in stats:
+                stats[station] = {
+                    'city': city, 'total': 0, 'correct_signal': 0,
+                    'brier_sum': 0.0, 'abs_error_sum': 0.0,
+                    'predictions_by_date': {},
+                }
+            s = stats[station]
+            s['total'] += 1
+            actual = 1.0 if res['outcome'] == 'YES' else 0.0
+            predicted = pred['our_prob'] / 100.0
+            s['brier_sum'] += (predicted - actual) ** 2
+            s['abs_error_sum'] += abs(pred['our_prob'] - res['outcome_prob'])
+            sig = pred.get('signal', '')
+            if sig == 'BUY YES' and res['outcome'] == 'YES':
+                s['correct_signal'] += 1
+            elif sig == 'BUY NO' and res['outcome'] == 'NO':
+                s['correct_signal'] += 1
+            d = pred.get('date', '')
+            if d not in s['predictions_by_date']:
+                s['predictions_by_date'][d] = 0
+            s['predictions_by_date'][d] += 1
+        for sid, s in stats.items():
+            if s['total'] > 0:
+                s['brier_score'] = round(s['brier_sum'] / s['total'], 4)
+                s['mean_abs_error'] = round(s['abs_error_sum'] / s['total'], 1)
+                s['signal_accuracy_pct'] = round(s['correct_signal'] / s['total'] * 100, 1)
+                s['days_tracked'] = len(s['predictions_by_date'])
+        self._station_stats = stats
+
+    # -- Public accessors --
+    def get_accuracy_report(self):
+        """Full accuracy report for /api/weather/accuracy."""
+        self._score_predictions()
+        ranked = sorted(
+            self._station_stats.items(),
+            key=lambda x: x[1].get('signal_accuracy_pct', 0) or 0,
+            reverse=True
+        )
+        return {
+            'ok': True,
+            'total_predictions': len(self._predictions),
+            'total_resolutions': len(self._resolutions),
+            'stations_tracked': len(self._station_stats),
+            'station_rankings': [
+                {
+                    'station': sid, 'city': s['city'],
+                    'total_predictions': s['total'],
+                    'correct_signals': s['correct_signal'],
+                    'signal_accuracy_pct': s.get('signal_accuracy_pct'),
+                    'brier_score': s.get('brier_score'),
+                    'mean_abs_error': s.get('mean_abs_error'),
+                    'days_tracked': s.get('days_tracked', 0),
+                }
+                for sid, s in ranked
+            ],
+            'recent_resolutions': [
+                {
+                    'condition_id': cid[:16] + '...',
+                    'outcome': r['outcome'],
+                    'question': r['question'],
+                    'resolved_at': r['resolved_at'],
+                }
+                for cid, r in sorted(self._resolutions.items(),
+                    key=lambda x: x[1].get('resolved_at', ''), reverse=True)[:10]
+            ],
+            'unresolved_markets': len(set(
+                p.get('condition_id', '') for p in self._predictions
+                if p.get('condition_id', '') not in self._resolutions
+            )),
+        }
+
+    def get_station_accuracy(self, station_id):
+        """Get accuracy stats for a single station."""
+        s = self._station_stats.get(station_id, {})
+        preds = [p for p in self._predictions if p.get('station') == station_id]
+        return {'station': station_id, 'stats': s, 'recent_predictions': preds[-20:]}
+
+    def needs_resolution_check(self):
+        return (time.time() - self._last_resolution_check) >= self.resolution_check_interval
 
 
 # MAIN MONITORING LOOP
