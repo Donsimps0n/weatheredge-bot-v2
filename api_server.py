@@ -37,7 +37,8 @@ try:
                                PostTradeAnalyst, MarketScanner as RufloMarketScanner,
                                NOHarvester as RufloNOHarvester,
                                YESHarvester as RufloYESHarvester,
-                               WeatherSentinel as RufloWeatherSentinel)
+                               WeatherSentinel as RufloWeatherSentinel,
+                                     AccuracyTracker as RufloAccuracyTracker)
     _ruflo_validator = PreTradeValidator()
     _ruflo_position_monitor = RufloPositionMonitor()
     _ruflo_analyst = PostTradeAnalyst()
@@ -45,8 +46,9 @@ try:
     _ruflo_no_harvester = RufloNOHarvester()
     _ruflo_yes_harvester = RufloYESHarvester()
     _ruflo_sentinel = RufloWeatherSentinel()
+    _ruflo_accuracy = RufloAccuracyTracker()
     RUFLO_AVAILABLE = True
-    logger.info("Ruflo agents loaded: Validator, PositionMonitor, Analyst, Scanner, NOHarvester, YESHarvester, WeatherSentinel")
+        logger.info("Ruflo agents loaded: Validator, PositionMonitor, Analyst, Scanner, NOHarvester, YESHarvester, WeatherSentinel, AccuracyTracker")
 except ImportError:
     RUFLO_AVAILABLE = False
     logger.warning("ruflo_monitor not available - running without Ruflo agents")
@@ -790,6 +792,31 @@ def get_weather_live():
         logger.error("weather/live error: %s", e)
         return jsonify({"ok": False, "error": str(e)}), 500
 
+
+@app.route("/api/weather/accuracy")
+def get_weather_accuracy():
+    """Get prediction accuracy report with per-station rankings."""
+    if not RUFLO_AVAILABLE:
+        return jsonify({"ok": False, "error": "AccuracyTracker not available"}), 503
+    try:
+        data = _ruflo_accuracy.get_accuracy_report()
+        return jsonify(data)
+    except Exception as e:
+        logger.error("weather/accuracy error: %s", e)
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+@app.route("/api/weather/accuracy/<station_id>")
+def get_station_accuracy(station_id):
+    """Get accuracy stats for a specific station."""
+    if not RUFLO_AVAILABLE:
+        return jsonify({"ok": False, "error": "AccuracyTracker not available"}), 503
+    try:
+        data = _ruflo_accuracy.get_station_accuracy(station_id)
+        return jsonify(data)
+    except Exception as e:
+        logger.error("station accuracy error: %s", e)
+        return jsonify({"ok": False, "error": str(e)}), 500
+
 @app.route("/api/signals")
 def get_signals():
     """Generate trading signals from weather markets + forecasts, cached 5 min."""
@@ -1043,6 +1070,15 @@ def _run_auto_trade_cycle():
                 _ruflo_sentinel.enrich_signals(sigs)
             except Exception as e:
                 logger.warning("Sentinel enrich failed: %s", e)
+
+        # Agent 8: AccuracyTracker - log predictions and check resolutions
+        if RUFLO_AVAILABLE:
+            try:
+                _ruflo_accuracy.log_predictions(sigs, _ruflo_sentinel)
+                if _ruflo_accuracy.needs_resolution_check():
+                    _ruflo_accuracy.check_resolutions()
+            except Exception as e:
+                logger.warning("AccuracyTracker cycle failed: %s", e)
         # Filter for tradeable signals
         tradeable = [s for s in sigs 
                      if s.get("theo_ev", 0) >= cfg["min_ev"]
