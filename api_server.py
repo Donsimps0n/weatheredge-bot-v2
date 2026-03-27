@@ -1283,6 +1283,9 @@ def _run_auto_trade_cycle():
                      and s.get("tokens")
                      and s.get("coordinator_verdict", "trade") not in ("veto", "cooldown")]
         tradeable.sort(key=lambda s: s["theo_ev"], reverse=True)
+        logger.info("Auto-trade: %d signals -> %d tradeable (ev>=%s kelly>=%s)", len(sigs), len(tradeable), cfg["min_ev"], cfg["min_kelly"])
+        if tradeable:
+            logger.info("Auto-trade top3: %s", [(s.get('city',''), round(s.get('theo_ev',0),1), s.get('coordinator_verdict','')) for s in tradeable[:3]])
         # Ruflo Agent 4: re-rank by edge*confidence from MarketScanner
         if RUFLO_AVAILABLE and tradeable:
             try:
@@ -1613,6 +1616,7 @@ def _run_auto_trade_cycle():
             except Exception as _exit_err:
                 logger.error("EXIT AGENTS error: %s", _exit_err)
 
+        logger.info("Auto-trade: placed %d paper trades this cycle", traded)
         logger.info("Auto-trade cycle done: %d trades placed (%s mode)", traded, "PAPER" if cfg["paper_mode"] else "LIVE")
     except Exception as exc:
         logger.error("Auto-trade cycle error: %s", exc)
