@@ -1405,8 +1405,10 @@ def _run_auto_trade_cycle():
                     token_id = tk.get("token_id", "")
                     break
             if not token_id:
+                logger.warning("TRADE_SKIP: %s | no token_id found (outcomes=%s)", sig.get('city',''), [t.get('outcome') for t in tokens])
                 continue
             if token_id in _traded_tokens:
+                logger.debug("TRADE_SKIP: %s | token already traded", sig.get('city',''))
                 continue  # Already have an order on this token
             # Entry kill switch: skip if physically impossible to reach temperature
             if ACTIVE_TRADER_AVAILABLE:

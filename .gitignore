@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+*.pyo
+venv/
+.env
+.env.*
+*.db
+*.sqlite
+.claude/
+.claude-flow/
+.mcp.json
+CLAUDE.md
