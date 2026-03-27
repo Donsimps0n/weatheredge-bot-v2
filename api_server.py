@@ -1112,11 +1112,11 @@ def _run_auto_trade_cycle():
     """Execute one auto-trade cycle: get signals, filter, place orders."""
     global _paper_trades
     cfg = _auto_trade_config
-    _trade_cycle_log.append({"ts": datetime.now(timezone.utc).isoformat(), "status": "cycle_entry", "active": _auto_trade_active})
-    if len(_trade_cycle_log) > 30: _trade_cycle_log.pop(0)
     if not _auto_trade_active:
         return
     try:
+        _trade_cycle_log.append({"ts": datetime.now(timezone.utc).isoformat(), "status": "cycle_entry", "active": _auto_trade_active})
+        if len(_trade_cycle_log) > 30: _trade_cycle_log.pop(0)
         # ── Auto-scan: refresh markets if empty or stale (>5 min) ────
         wm = _state.get("weather_markets", [])
         _last = _state.get("last_scan")
@@ -1636,8 +1636,13 @@ def _start_auto_trade_timer():
     import threading
     def _loop():
         while True:
-            if _auto_trade_active:
-                _run_auto_trade_cycle()
+            try:
+                if _auto_trade_active:
+                    _run_auto_trade_cycle()
+            except Exception as _thread_err:
+                logger.error("Auto-trade THREAD error: %s", _thread_err)
+                _trade_cycle_log.append({"ts": datetime.now(timezone.utc).isoformat(), "status": "THREAD_ERROR", "error": str(_thread_err)})
+                if len(_trade_cycle_log) > 30: _trade_cycle_log.pop(0)
             time.sleep(60)  # 1 minute
     t = threading.Thread(target=_loop, daemon=True)
     t.start()
