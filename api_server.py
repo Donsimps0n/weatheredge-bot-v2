@@ -1112,6 +1112,8 @@ def _run_auto_trade_cycle():
     """Execute one auto-trade cycle: get signals, filter, place orders."""
     global _paper_trades
     cfg = _auto_trade_config
+    _trade_cycle_log.append({"ts": datetime.now(timezone.utc).isoformat(), "status": "cycle_entry", "active": _auto_trade_active})
+    if len(_trade_cycle_log) > 30: _trade_cycle_log.pop(0)
     if not _auto_trade_active:
         return
     try:
@@ -1624,6 +1626,8 @@ def _run_auto_trade_cycle():
         logger.info("Auto-trade: placed %d paper trades this cycle", traded)
         logger.info("Auto-trade cycle done: %d trades placed (%s mode)", traded, "PAPER" if cfg["paper_mode"] else "LIVE")
     except Exception as exc:
+        _trade_cycle_log.append({"ts": datetime.now(timezone.utc).isoformat(), "status": "ERROR", "error": str(exc)})
+        if len(_trade_cycle_log) > 30: _trade_cycle_log.pop(0)
         logger.error("Auto-trade cycle error: %s", exc)
 
 
