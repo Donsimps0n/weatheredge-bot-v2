@@ -42,6 +42,7 @@ try:
                                      IntelligenceFeed as RufloIntelligenceFeed,
                                      RufloCoordinator as RufloCoordinatorAgent,
                                      RufloSharedState)
+    from exit_agents import ProfitTaker, RiskCutter
     _ruflo_validator = PreTradeValidator()
     _ruflo_position_monitor = RufloPositionMonitor()
     _ruflo_analyst = PostTradeAnalyst()
@@ -51,6 +52,8 @@ try:
     _ruflo_sentinel = RufloWeatherSentinel()
     _ruflo_accuracy = RufloAccuracyTracker()
     _ruflo_intel = RufloIntelligenceFeed()
+    _profit_taker = ProfitTaker()
+    _risk_cutter = RiskCutter()
     _ruflo_coordinator = RufloCoordinatorAgent()
     _ruflo_shared = RufloSharedState()
     _ruflo_shared.register_agent('sentinel', 'METAR polling + weather trends for 19 stations')
@@ -1462,6 +1465,103 @@ def _run_auto_trade_cycle():
             except Exception as _yh_err:
                 logger.error("RUFLO_YES_HARVEST scan error: %s", _yh_err)
 
+
+        # ── Agent 11 & 12: Exit Strategy (ProfitTaker + RiskCutter) ──────
+        if RUFLO_AVAILABLE and _paper_trades:
+            try:
+                # Register any new BUY positions with ProfitTaker
+                for pt in _paper_trades:
+                    tid = pt.get('token_id', '')
+                    if tid and tid not in _profit_taker.get_positions():
+                        _profit_taker.register_position(
+                            token_id=tid,
+                            entry_price=pt.get('price', 0) * 100,  # convert to cents
+                            size=pt.get('size', 1) * pt.get('price', 0.05),
+                            city=pt.get('city', ''),
+                            bin_label=pt.get('signal', ''),
+                            confidence='MED',
+                            signal_type=pt.get('signal', 'BUY YES'),
+                            question=pt.get('question', ''),
+                        )
+
+                # Update prices from current market data (use signal prices)
+                price_map = {}
+                for s in sigs:
+                    tid_y = s.get('yes_token_id', '')
+                    tid_n = s.get('no_token_id', '')
+                    mp = s.get('market_price', 0)
+                    if tid_y and mp > 0:
+                        price_map[tid_y] = mp  # cents
+                    if tid_n and mp > 0:
+                        price_map[tid_n] = 100 - mp
+                if price_map:
+                    _profit_taker.update_prices(price_map)
+
+                # Calculate hours to resolution (midnight UTC)
+                from datetime import datetime, timezone
+                now_utc = datetime.now(timezone.utc)
+                midnight = now_utc.replace(hour=0, minute=0, second=0, microsecond=0)
+                if now_utc.hour >= 0:
+                    from datetime import timedelta
+                    midnight = midnight + timedelta(days=1)
+                hours_left = (midnight - now_utc).total_seconds() / 3600.0
+
+                # Build sentinel data for RiskCutter
+                sentinel_wx = {}
+                if _ruflo_sentinel:
+                    for city_name, station_id in _ruflo_sentinel.CITY_TO_STATION.items():
+                        trend = _ruflo_sentinel._trends.get(station_id, {})
+                        if trend.get('current_f') is not None:
+                            sentinel_wx[city_name] = {
+                                'current_f': trend['current_f'],
+                                'trend_rate_f_hr': trend.get('rate_f_hr', 0),
+                            }
+
+                # Run ProfitTaker evaluation
+                profit_signals = _profit_taker.evaluate(
+                    hours_to_resolution=hours_left
+                )
+
+                # Run RiskCutter evaluation
+                cut_signals = _risk_cutter.evaluate(
+                    positions=_profit_taker.get_positions(),
+                    hours_to_resolution=hours_left,
+                    sentinel_data=sentinel_wx,
+                    profit_taker_signals=profit_signals,
+                )
+
+                # Combine all sell signals
+                all_sells = profit_signals + cut_signals
+                for sell in all_sells:
+                    sell_info = {
+                        'ts': datetime.now(timezone.utc).isoformat(),
+                        'action': 'SELL',
+                        'reason': sell.get('reason', ''),
+                        'token_id': sell.get('token_id', '')[:12] + '...',
+                        'city': sell.get('city', ''),
+                        'entry_price': sell.get('entry_price', 0),
+                        'current_price': sell.get('current_price', 0),
+                        'sell_size': sell.get('sell_size', 0),
+                        'urgency': sell.get('urgency', ''),
+                        'mode': 'PAPER' if cfg['paper_mode'] else 'LIVE',
+                    }
+                    _paper_trades.append(sell_info)
+                    _trade_log.append(sell_info)
+                    logger.info("EXIT %s: %s %s | %s | entry=%.1fc curr=%.1fc | %s",
+                                sell_info['mode'], sell.get('reason',''), sell.get('city',''),
+                                sell.get('bin',''), sell.get('entry_price',0),
+                                sell.get('current_price',0), sell.get('urgency',''))
+
+                    # Remove fully-exited positions
+                    if sell.get('sell_fraction', 1.0) >= 1.0:
+                        _profit_taker.remove_position(sell.get('token_id', ''))
+
+                if all_sells:
+                    logger.info("EXIT AGENTS: %d profit signals, %d risk cuts, %d total sells",
+                                len(profit_signals), len(cut_signals), len(all_sells))
+            except Exception as _exit_err:
+                logger.error("EXIT AGENTS error: %s", _exit_err)
+
         logger.info("Auto-trade cycle done: %d trades placed (%s mode)", traded, "PAPER" if cfg["paper_mode"] else "LIVE")
     except Exception as exc:
         logger.error("Auto-trade cycle error: %s", exc)
@@ -1588,6 +1688,26 @@ def _start_position_monitor():
     t = threading.Thread(target=_monitor_loop, daemon=True)
     t.start()
     logger.info("Position monitor started (every 5 min)")
+
+
+
+@app.route("/api/exit-strategy")
+def exit_strategy():
+    """Exit strategy report from ProfitTaker and RiskCutter agents."""
+    try:
+        if not RUFLO_AVAILABLE:
+            return jsonify({'ok': False, 'error': 'Ruflo agents not available'})
+        pt_report = _profit_taker.get_report()
+        rc_report = _risk_cutter.get_report()
+        return jsonify({
+            'ok': True,
+            'profit_taker': pt_report,
+            'risk_cutter': rc_report,
+            'combined_sells': len(pt_report.get('positions', [])),
+            'pending_cuts': rc_report.get('pending_cuts', 0),
+        })
+    except Exception as e:
+        return jsonify({'ok': False, 'error': str(e)})
 
 
 @app.route("/api/entry-check")
