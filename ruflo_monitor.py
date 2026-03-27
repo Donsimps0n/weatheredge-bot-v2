@@ -1006,13 +1006,24 @@ class IntelligenceFeed:
         consensus = {}
 
         # Extract primary forecasts from signals
+        # RUFLO FIX: Prefer sentinel_current_c (real METAR data) over
+        # 'forecast' field which defaults to 20C/68F when weather cache empty.
         primary_by_city = {}
         for sig in sigs:
             city = sig.get('city', '')
             if city and city not in primary_by_city:
+                # Priority 1: WeatherSentinel's live METAR observation (always °C)
+                sentinel_c = sig.get('sentinel_current_c')
+                if sentinel_c is not None:
+                    primary_by_city[city] = {
+                        'temp_c': round(sentinel_c, 1),
+                        'temp_f': round(sentinel_c * 9/5 + 32, 1),
+                        'source': 'sentinel_metar',
+                    }
+                    continue
+                # Priority 2: forecast field with unit conversion
                 fcast = sig.get('forecast')
                 if fcast is not None:
-                    # Convert to °C if signal uses Fahrenheit (US cities)
                     sig_unit = sig.get('unit', 'C')
                     if sig_unit == 'F':
                         fcast_c = round((fcast - 32) * 5/9, 1)
@@ -1023,7 +1034,7 @@ class IntelligenceFeed:
                     primary_by_city[city] = {
                         'temp_c': fcast_c,
                         'temp_f': fcast_f,
-                        'source': 'primary',
+                        'source': 'forecast_converted',
                     }
 
         for city in set(list(primary_by_city.keys()) + list(om_forecasts.keys())):
@@ -1054,6 +1065,7 @@ class IntelligenceFeed:
                 consensus[city] = {
                     'primary_c': p_c,
                     'primary_f': primary['temp_f'],
+                    'primary_source': primary.get('source', 'unknown'),
                     'open_meteo_c': o_c,
                     'open_meteo_f': om['high_f'],
                     'spread_c': spread_c,
