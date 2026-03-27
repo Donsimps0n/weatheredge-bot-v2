@@ -452,7 +452,12 @@ class WeatherSentinel:
     def _compute_all_trends(self):
         for sid, history in self._history.items():
             if len(history) < 2:
-                self._trends[sid] = {'rate_c_hr': 0.0, 'direction': 'insufficient'}
+                latest = history[-1] if history else None
+                t = {'rate_c_hr': 0.0, 'direction': 'insufficient'}
+                if latest and latest.get('temp_c') is not None:
+                    t['current_c'] = latest['temp_c']
+                    t['current_f'] = round(latest['temp_c'] * 9/5 + 32, 1)
+                self._trends[sid] = t
                 continue
             recent = [h for h in history if h['ts'] > time.time() - 7200]
             if len(recent) < 2:
