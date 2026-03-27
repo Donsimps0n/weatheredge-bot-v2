@@ -1105,7 +1105,8 @@ _auto_trade_config = {
     "paper_mode": True,   # Start in paper mode for safety
 }
 _paper_trades = []
-_traded_tokens = set()  # Track token_ids we already have orders on
+_traded_tokens = set()
+_trade_cycle_log = []  # Debug: last N cycle summaries  # Track token_ids we already have orders on
 
 def _run_auto_trade_cycle():
     """Execute one auto-trade cycle: get signals, filter, place orders."""
@@ -1169,7 +1170,9 @@ def _run_auto_trade_cycle():
         wx_cities = _weather_cache["data"].get("cities", []) if _weather_cache["data"] else []
         sigs = _build_signals(wm, wx_cities)
         if not sigs:
-            logger.info("Auto-trade: no signals")
+            _trade_cycle_log.append({"ts": datetime.now(timezone.utc).isoformat(), "status": "no_signals", "wm": len(wm), "wx": len(wx_cities)})
+            if len(_trade_cycle_log) > 20: _trade_cycle_log.pop(0)
+            logger.info("Auto-trade: no signals (wm=%d wx=%d)", len(wm), len(wx_cities))
             return
         # Agent 7: Weather Sentinel - poll METAR and enrich signals
         if RUFLO_AVAILABLE:
@@ -1283,6 +1286,8 @@ def _run_auto_trade_cycle():
                      and s.get("tokens")
                      and s.get("coordinator_verdict", "trade") not in ("veto", "cooldown")]
         tradeable.sort(key=lambda s: s["theo_ev"], reverse=True)
+        _trade_cycle_log.append({"ts": datetime.now(timezone.utc).isoformat(), "status": "running", "sigs": len(sigs), "tradeable": len(tradeable), "wm": len(wm)})
+        if len(_trade_cycle_log) > 20: _trade_cycle_log.pop(0)
         logger.info("Auto-trade: %d signals -> %d tradeable (ev>=%s kelly>=%s)", len(sigs), len(tradeable), cfg["min_ev"], cfg["min_kelly"])
         if tradeable:
             logger.info("Auto-trade top3: %s", [(s.get('city',''), round(s.get('theo_ev',0),1), s.get('coordinator_verdict','')) for s in tradeable[:3]])
@@ -1745,6 +1750,18 @@ def _start_position_monitor():
     logger.info("Position monitor started (every 5 min)")
 
 
+
+@app.route("/api/trade-debug")
+def trade_debug():
+    return jsonify({
+        "ok": True,
+        "auto_trade_active": _auto_trade_active,
+        "cycle_log": _trade_cycle_log[-10:],
+        "paper_trades": len(_paper_trades),
+        "traded_tokens": len(_traded_tokens),
+        "weather_markets": len(_state.get("weather_markets", [])),
+        "weather_cities": len(_weather_cache["data"].get("cities", []) if _weather_cache["data"] else []),
+    })
 
 @app.route("/api/exit-strategy")
 def exit_strategy():
