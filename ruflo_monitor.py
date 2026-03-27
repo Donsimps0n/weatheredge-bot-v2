@@ -1001,9 +1001,17 @@ class IntelligenceFeed:
             if city and city not in primary_by_city:
                 fcast = sig.get('forecast')
                 if fcast is not None:
+                    # Convert to °C if signal uses Fahrenheit (US cities)
+                    sig_unit = sig.get('unit', 'C')
+                    if sig_unit == 'F':
+                        fcast_c = round((fcast - 32) * 5/9, 1)
+                        fcast_f = round(fcast, 1)
+                    else:
+                        fcast_c = round(fcast, 1)
+                        fcast_f = round(fcast * 9/5 + 32, 1)
                     primary_by_city[city] = {
-                        'temp_c': fcast,
-                        'temp_f': round(fcast * 9/5 + 32, 1),
+                        'temp_c': fcast_c,
+                        'temp_f': fcast_f,
                         'source': 'primary',
                     }
 
