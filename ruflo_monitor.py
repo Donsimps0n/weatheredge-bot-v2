@@ -465,7 +465,12 @@ class WeatherSentinel:
             oldest, newest = recent[0], recent[-1]
             dt_hours = (newest['ts'] - oldest['ts']) / 3600.0
             if dt_hours < 0.05:
-                self._trends[sid] = {'rate_c_hr': 0.0, 'direction': 'stable'}
+                self._trends[sid] = {
+                    'rate_c_hr': 0.0, 'direction': 'stable',
+                    'current_c': newest['temp_c'],
+                    'current_f': round(newest['temp_c'] * 9/5 + 32, 1),
+                    'samples': len(recent), 'window_hrs': 0.0,
+                }
                 continue
             delta_c = newest['temp_c'] - oldest['temp_c']
             rate = round(delta_c / dt_hours, 2)
@@ -989,9 +994,10 @@ class IntelligenceFeed:
 
         return forecasts
 
-    def build_consensus(self, sigs, force=False):
+    def build_consensus(self, sigs, force=False, sentinel=None):
         """Compare primary forecast (from signals) with Open-Meteo.
-        Returns consensus data per city: agreement level, spread, recommendation."""
+        Returns consensus data per city: agreement level, spread, recommendation.
+        If sentinel is provided, directly queries it for any city missing data."""
         now = time.time()
         # Only use cache when called without signals (e.g. from API endpoint).
         # If real sigs are provided (trade cycle), always rebuild so primary
@@ -1041,6 +1047,31 @@ class IntelligenceFeed:
                         'temp_f': fcast_f,
                         'source': 'forecast_converted',
                     }
+
+        # RUFLO: Direct sentinel lookup for any city still missing primary data.
+        # Covers cities where: (a) no market signal exists, (b) signal wasn't
+        # enriched, or (c) METAR had no data during the last poll but history exists.
+        if sentinel is not None:
+            for city_name, station_id in getattr(sentinel, 'CITY_TO_STATION', {}).items():
+                if city_name not in primary_by_city:
+                    trend = sentinel._trends.get(station_id, {})
+                    tc = trend.get('current_c')
+                    if tc is not None:
+                        primary_by_city[city_name] = {
+                            'temp_c': round(tc, 1),
+                            'temp_f': round(tc * 9/5 + 32, 1),
+                            'source': 'sentinel_direct',
+                        }
+                    else:
+                        # Try latest observation from history
+                        hist = sentinel._history.get(station_id, [])
+                        if hist and hist[-1].get('temp_c') is not None:
+                            tc2 = hist[-1]['temp_c']
+                            primary_by_city[city_name] = {
+                                'temp_c': round(tc2, 1),
+                                'temp_f': round(tc2 * 9/5 + 32, 1),
+                                'source': 'sentinel_history',
+                            }
 
         for city in set(list(primary_by_city.keys()) + list(om_forecasts.keys())):
             primary = primary_by_city.get(city)
@@ -1109,7 +1140,7 @@ class IntelligenceFeed:
         self.compute_sigma_adjustments(accuracy_tracker)
 
         # 2. Build consensus
-        consensus = self.build_consensus(sigs)
+        consensus = self.build_consensus(sigs, sentinel=sentinel)
 
         # 3. Generate alerts
         alerts = self.generate_alerts(sentinel, sigs)
@@ -1158,7 +1189,7 @@ class IntelligenceFeed:
 
     def get_intelligence_report(self, sigs, sentinel, accuracy_tracker):
         """Full intelligence report combining all Phase 3 data."""
-        consensus = self.build_consensus(sigs)
+        consensus = self.build_consensus(sigs, sentinel=sentinel)
         alerts = self._alerts_cache.get('alerts', [])
         sigma_adj = self._sigma_adjustments
 
