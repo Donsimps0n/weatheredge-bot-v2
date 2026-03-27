@@ -136,11 +136,11 @@ def root():
     _uptime = int(time.time() - _boot)
     _uptime_str = f"{_uptime // 3600}h {(_uptime % 3600) // 60}m"
     _last_log = _trade_cycle_log[-1] if _trade_cycle_log else {}
-    # Paper trades don't have pnl/status — estimate from price movement
-    _total_spent = sum(t.get("price", 0) * t.get("size", 0) for t in _paper_trades)
-    _avg_ev = sum(t.get("ev", 0) for t in _paper_trades) / max(1, _n_trades)
-    _buy_yes = [t for t in _paper_trades if "YES" in t.get("signal", "")]
-    _buy_no = [t for t in _paper_trades if "NO" in t.get("signal", "")]
+    _pnl = sum(t.get("pnl", 0) for t in _paper_trades if "pnl" in t)
+    _open = [t for t in _paper_trades if t.get("status") == "open"]
+    _closed = [t for t in _paper_trades if t.get("status") == "closed"]
+    _win = [t for t in _closed if t.get("pnl", 0) > 0]
+    _win_rate = f"{len(_win)/len(_closed)*100:.0f}%" if _closed else "N/A"
     _agents = {
         "MarketScanner": _n_markets > 0,
         "WeatherCache": _n_cities > 0,
@@ -182,8 +182,8 @@ td{{padding:8px 12px;border-bottom:1px solid #1e293b0a;color:#cbd5e1}}
   <div class="status">{"LIVE" if _auto_trade_active else "STOPPED"} &bull; Uptime {_uptime_str} &bull; Auto-refresh 30s</div>
 </div>
 <div class="grid">
-  <div class="card"><h3>Paper Trades</h3><div class="metric blue">{_n_trades}</div><div class="sub">{len(_buy_yes)} YES &bull; {len(_buy_no)} NO</div></div>
-  <div class="card"><h3>Total Deployed</h3><div class="metric green">{_total_spent:.1f} USDC</div><div class="sub">Avg EV: {_avg_ev:.1f}%</div></div>
+  <div class="card"><h3>Paper Trades</h3><div class="metric blue">{_n_trades}</div><div class="sub">{len(_open)} open &bull; {len(_closed)} closed</div></div>
+  <div class="card"><h3>Paper P&L</h3><div class="metric {'green' if _pnl >= 0 else 'red'}">{"+" if _pnl >= 0 else ""}{_pnl:.2f} USDC</div><div class="sub">Win rate: {_win_rate}</div></div>
   <div class="card"><h3>Weather Markets</h3><div class="metric">{_n_markets}</div><div class="sub">{_n_cities} cities tracked</div></div>
   <div class="card"><h3>Last Cycle</h3><div class="metric" style="font-size:18px">{_last_log.get('status','â') if isinstance(_last_log, dict) else 'â'}</div><div class="sub">Sigs: {_last_log.get('sigs','â') if isinstance(_last_log, dict) else 'â'} &bull; Tradeable: {_last_log.get('tradeable','â') if isinstance(_last_log, dict) else 'â'}</div></div>
 </div>
@@ -192,16 +192,16 @@ td{{padding:8px 12px;border-bottom:1px solid #1e293b0a;color:#cbd5e1}}
     for name, alive in _agents.items():
         html += f'<div class="agent"><div class="dot {"on" if alive else "off"}"></div><span class="agent-name">{name}</span></div>\n'
     html += """</div></div>
-<div class="trades"><h2>Recent Trades (last 10)</h2><table><tr><th>Time</th><th>Market</th><th>Signal</th><th>Price</th><th>Size</th><th>EV</th><th>City</th></tr>"""
+<div class="trades"><h2>Recent Trades (last 10)</h2><table><tr><th>Time</th><th>Market</th><th>Side</th><th>Price</th><th>Size</th><th>Status</th><th>P&L</th></tr>"""
     for t in list(reversed(_paper_trades))[:10]:
-        _sig = t.get("signal", "?")
+        _side = t.get("side", "?")
         _price = f"{t.get('price', 0):.2f}"
-        _sz = f"{t.get('size', 0)}"
-        _ev = f"{t.get('ev', 0):.1f}%"
-        _city = t.get("city", "?")
-        _mk = t.get("question", "?")[:55]
-        _tm = t.get("ts", "?")[11:19]
-        html += f"<tr><td>{_tm}</td><td>{_mk}</td><td>{_sig}</td><td>{_price}</td><td>{_sz}</td><td>{_ev}</td><td>{_city}</td></tr>\n"
+        _sz = f"{t.get('size', 0):.1f}"
+        _st = t.get("status", "?")
+        _pl = f"{t.get('pnl', 0):+.2f}" if "pnl" in t else "â"
+        _mk = t.get("question", t.get("market", "?"))[:60]
+        _tm = t.get("ts", "?")[:19]
+        html += f"<tr><td>{_tm}</td><td>{_mk}</td><td>{_side}</td><td>{_price}</td><td>{_sz}</td><td>{_st}</td><td>{_pl}</td></tr>\n"
     html += f"""</table></div>
 <div class="footer">WeatherEdge Bot v2 &bull; Paper Mode &bull; {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}</div>
 </body></html>"""
@@ -1536,12 +1536,15 @@ def _run_auto_trade_cycle():
                     if cfg.get('paper_mode', True):
                         _paper_trades.append({
                             'token_id': _no_tok,
-                            'side': 'BUY',
+                            'ts': datetime.now(timezone.utc).isoformat(),
+                            'question': _no_opp.get('question', f"NO harvest: {_city}")[:80],
+                            'signal': 'NO_HARVEST',
                             'price': _no_px,
                             'size': _no_sz,
-                            'timestamp': time.time(),
-                            'signal': 'NO_HARVEST',
+                            'ev': _exp,
+                            'our_prob': _oprob,
                             'city': _city,
+                            'mode': 'PAPER',
                         })
                         _trade_log.append(f"RUFLO_NO_HARVEST PAPER: {_city} | NO @ {_no_px:.3f} | expected +{_exp:.1f}% | our_prob={_oprob:.1f}%")
                         logger.info("RUFLO_NO_HARVEST PAPER: %s | NO @ %.3f | expected +%.1f%% | our_prob=%.1f%%",
