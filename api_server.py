@@ -1096,7 +1096,7 @@ def _start_scheduler_thread():
 
 
 # ---------- Auto-Trade Loop ----------
-_auto_trade_active = False
+_auto_trade_active = True   # Auto-start on deploy
 _auto_trade_config = {
     "min_ev": 5.0,       # Minimum theo EV to trade
     "min_kelly": 2.0,    # Minimum kelly %
@@ -1169,6 +1169,12 @@ def _run_auto_trade_cycle():
                 logger.info("Auto-scan: refreshed %d weather markets", len(wm))
             except Exception as _scan_err:
                 logger.warning("Auto-scan failed: %s", _scan_err)
+        # Auto-refresh weather cache if stale (>10 min)
+        if not _weather_cache["data"] or (time.time() - _weather_cache["ts"]) > 600:
+            try:
+                _warm_weather_cache()
+            except Exception:
+                pass
         wx_cities = _weather_cache["data"].get("cities", []) if _weather_cache["data"] else []
         sigs = _build_signals(wm, wx_cities)
         if not sigs:
@@ -1816,6 +1822,53 @@ def entry_check():
 
 
 _init_clob()
+
+# Warm up weather cache on startup so trade cycle has forecast data
+def _warm_weather_cache():
+    import requests as _req
+    try:
+        _cities = [
+            ("London", 51.51, -0.13), ("Paris", 48.86, 2.35), ("Tokyo", 35.68, 139.69),
+            ("New York", 40.71, -74.01), ("Chicago", 41.88, -87.63), ("Houston", 29.76, -95.37),
+            ("Dallas", 32.78, -96.80), ("Miami", 25.76, -80.19), ("Los Angeles", 34.05, -118.24),
+            ("San Francisco", 37.77, -122.42), ("Seattle", 47.61, -122.33), ("Atlanta", 33.75, -84.39),
+            ("Denver", 39.74, -104.99), ("Phoenix", 33.45, -112.07), ("Detroit", 42.33, -83.05),
+            ("Minneapolis", 44.98, -93.27), ("Toronto", 43.65, -79.38), ("Seoul", 37.57, 126.98),
+            ("Beijing", 39.90, 116.41), ("Singapore", 1.35, 103.82), ("Mumbai", 19.08, 72.88),
+            ("Sydney", -33.87, 151.21), ("Sao Paulo", -23.55, -46.63), ("Buenos Aires", -34.60, -58.38),
+            ("Mexico City", 19.43, -99.13),
+        ]
+        _lats = ",".join(str(c[1]) for c in _cities)
+        _lons = ",".join(str(c[2]) for c in _cities)
+        _r = _req.get(
+            "https://api.open-meteo.com/v1/forecast",
+            params={"latitude": _lats, "longitude": _lons,
+                    "daily": "temperature_2m_max,temperature_2m_min",
+                    "current_weather": "true", "timezone": "auto",
+                    "forecast_days": 2},
+            timeout=15,
+        )
+        _data = _r.json()
+        _results = []
+        _items = _data if isinstance(_data, list) else [_data]
+        for i, _item in enumerate(_items):
+            _cw = _item.get("current_weather", {})
+            _daily = _item.get("daily", {})
+            _results.append({
+                "name": _cities[i][0] if i < len(_cities) else f"City{i}",
+                "lat": _cities[i][1] if i < len(_cities) else 0,
+                "lon": _cities[i][2] if i < len(_cities) else 0,
+                "current_temp_c": _cw.get("temperature"),
+                "forecast_high_c": _daily.get("temperature_2m_max", [None, None])[1] if len(_daily.get("temperature_2m_max", [])) > 1 else _daily.get("temperature_2m_max", [None])[0],
+                "forecast_low_c": _daily.get("temperature_2m_min", [None, None])[1] if len(_daily.get("temperature_2m_min", [])) > 1 else _daily.get("temperature_2m_min", [None])[0],
+            })
+        _weather_cache["data"] = {"ok": True, "cities": _results, "count": len(_results)}
+        _weather_cache["ts"] = time.time()
+        logger.info("Weather cache warmed: %d cities", len(_results))
+    except Exception as e:
+        logger.warning("Weather cache warmup failed: %s", e)
+
+_warm_weather_cache()
 _start_auto_trade_timer()
 _start_position_monitor()
 
