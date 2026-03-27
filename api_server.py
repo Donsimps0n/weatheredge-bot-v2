@@ -6,7 +6,7 @@ Lightweight Flask API that exposes bot data to the Vercel dashboard.
 import os
 import time
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 logging.basicConfig(
     level=logging.INFO,
@@ -1123,7 +1123,7 @@ def _run_auto_trade_cycle():
         _stale = True
         if _last:
             try:
-                from datetime import datetime, timezone
+                # (datetime already imported at module level)
                 _age = (datetime.now(timezone.utc) - datetime.fromisoformat(_last)).total_seconds()
                 _stale = _age > 300  # 5 minutes
             except Exception:
@@ -1559,11 +1559,11 @@ def _run_auto_trade_cycle():
                     _profit_taker.update_prices(price_map)
 
                 # Calculate hours to resolution (midnight UTC)
-                from datetime import datetime, timezone
+                # (datetime already imported at module level)
                 now_utc = datetime.now(timezone.utc)
                 midnight = now_utc.replace(hour=0, minute=0, second=0, microsecond=0)
                 if now_utc.hour >= 0:
-                    from datetime import timedelta
+                    # (datetime already imported at module level)
                     midnight = midnight + timedelta(days=1)
                 hours_left = (midnight - now_utc).total_seconds() / 3600.0
 
