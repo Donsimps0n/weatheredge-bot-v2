@@ -988,7 +988,18 @@ class IntelligenceFeed:
         """Compare primary forecast (from signals) with Open-Meteo.
         Returns consensus data per city: agreement level, spread, recommendation."""
         now = time.time()
-        if not force and (now - self._consensus_ts) < self._consensus_interval and self._consensus_cache:
+        # Only use cache when called without signals (e.g. from API endpoint).
+        # If real sigs are provided (trade cycle), always rebuild so primary
+        # forecasts are fresh and the cache is never poisoned by an empty-sigs call.
+        has_signals = bool(sigs)
+        cache_valid = (
+            not force
+            and not has_signals
+            and (now - self._consensus_ts) < self._consensus_interval
+            and self._consensus_cache
+            and any('primary_c' in v for v in self._consensus_cache.values())
+        )
+        if cache_valid:
             return self._consensus_cache
 
         om_forecasts = self.fetch_open_meteo_forecasts()
