@@ -38,6 +38,13 @@ try:
 except ImportError:
     HAS_CLOB_BOOK = False
 
+# Persistent trade ledger (SQLite)
+try:
+    import trade_ledger
+    HAS_LEDGER = True
+except ImportError:
+    HAS_LEDGER = False
+
 # Ruflo monitor agents (pre-trade validator, position monitor, analyst, scanner)
 try:
     from ruflo_monitor import (PreTradeValidator, PositionMonitor as RufloPositionMonitor,
@@ -1584,7 +1591,13 @@ def _run_auto_trade_cycle():
                 _trade_log.append(trade_info)
                 if len(_trade_log) > _MAX_TRADE_LOG:
                     _trade_log[:] = _trade_log[-_MAX_TRADE_LOG:]
-                logger.info("PAPER TRADE: %s %s @ %.2f x %.1f (EV=%.1f)", sig_type, sig.get("city",""), price, size, sig.get("theo_ev",0))
+                logger.info("PAPER TRADE: %s %s @ %.2f x %.1f (EV=%.1f evD=%.1f)", sig_type, sig.get("city",""), price, size, sig.get("theo_ev",0), sig.get("ev_dollar",0))
+                # Persist to SQLite ledger
+                if HAS_LEDGER:
+                    try:
+                        trade_ledger.record_trade(trade_info)
+                    except Exception as _led_err:
+                        logger.debug("Ledger write error: %s", _led_err)
                 # Ruflo Agent 3: record outcome for win-rate analytics
                 if RUFLO_AVAILABLE:
                     _ruflo_analyst.record(
@@ -1663,6 +1676,18 @@ def _run_auto_trade_cycle():
                         _trade_log.append(f"RUFLO_NO_HARVEST PAPER: {_city} | NO @ {_no_px:.3f} | expected +{_exp:.1f}% | our_prob={_oprob:.1f}%")
                         logger.info("RUFLO_NO_HARVEST PAPER: %s | NO @ %.3f | expected +%.1f%% | our_prob=%.1f%%",
                                     _city, _no_px, _exp, _oprob)
+                        if HAS_LEDGER:
+                            try:
+                                trade_ledger.record_trade({
+                                    'ts': datetime.now(timezone.utc).isoformat(),
+                                    'question': _no_opp.get('question', f"NO harvest: {_city}")[:80],
+                                    'city': _city, 'signal': 'NO_HARVEST',
+                                    'token_id': _no_tok[:16], 'price': _no_px, 'size': _no_sz,
+                                    'ev': _exp, 'ev_dollar': _exp, 'our_prob': _oprob,
+                                    'mkt_price': round(_no_px * 100, 1), 'mode': 'PAPER',
+                                })
+                            except Exception:
+                                pass
                     else:
                         try:
                             _no_order = _clob_client.create_and_post_order(OrderArgs(
@@ -1825,6 +1850,14 @@ def _run_auto_trade_cycle():
 
         logger.info("Auto-trade: placed %d paper trades this cycle", traded)
         logger.info("Auto-trade cycle done: %d trades placed (%s mode)", traded, "PAPER" if cfg["paper_mode"] else "LIVE")
+        # Persist cycle stats
+        if HAS_LEDGER:
+            try:
+                _top = tradeable[0].get('city', '') if tradeable else ''
+                _topev = tradeable[0].get('ev_dollar', 0) if tradeable else 0
+                trade_ledger.record_cycle(len(sigs), len(tradeable), traded, _top, _topev)
+            except Exception:
+                pass
     except Exception as exc:
         _trade_cycle_log.append({"ts": datetime.now(timezone.utc).isoformat(), "status": "ERROR", "error": str(exc)})
         if len(_trade_cycle_log) > 30: _trade_cycle_log.pop(0)
@@ -1958,6 +1991,46 @@ def _start_position_monitor():
     t.start()
     logger.info("Position monitor started (every 5 min)")
 
+
+
+@app.route("/api/ledger")
+def api_ledger():
+    """Persistent trade history from SQLite ledger."""
+    if not HAS_LEDGER:
+        return jsonify({"ok": False, "error": "Ledger not available"}), 503
+    try:
+        limit = request.args.get("limit", 200, type=int)
+        city = request.args.get("city")
+        if city:
+            trades = trade_ledger.get_trades_by_city(city)
+        else:
+            trades = trade_ledger.get_all_trades(limit)
+        return jsonify({"ok": True, "trades": trades, "count": len(trades)})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+@app.route("/api/ledger/performance")
+def api_ledger_performance():
+    """Performance summary from persistent ledger."""
+    if not HAS_LEDGER:
+        return jsonify({"ok": False, "error": "Ledger not available"}), 503
+    try:
+        return jsonify({"ok": True, **trade_ledger.get_performance_summary()})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+@app.route("/api/ledger/unresolved")
+def api_ledger_unresolved():
+    """Trades awaiting resolution."""
+    if not HAS_LEDGER:
+        return jsonify({"ok": False, "error": "Ledger not available"}), 503
+    try:
+        trades = trade_ledger.get_unresolved_trades()
+        return jsonify({"ok": True, "trades": trades, "count": len(trades)})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
 
 
 @app.route("/api/trade-debug")
