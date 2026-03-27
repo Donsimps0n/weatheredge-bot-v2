@@ -1369,6 +1369,7 @@ def _run_auto_trade_cycle():
                      and s.get("kelly", 0) >= cfg["min_kelly"]
                      and s.get("signal") in ("BUY YES", "BUY NO")
                      and s.get("tokens")
+                     and s.get("market_price", 0) >= 5  # Skip penny markets (<$0.05) — no liquidity, inflated EV
                      and s.get("coordinator_verdict", "trade") not in ("veto", "cooldown")]
         tradeable.sort(key=lambda s: s["theo_ev"], reverse=True)
         _trade_cycle_log.append({"ts": datetime.now(timezone.utc).isoformat(), "status": "running", "sigs": len(sigs), "tradeable": len(tradeable), "wm": len(wm)})
