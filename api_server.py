@@ -31,6 +31,13 @@ except ImportError:
     def should_enter(*a, **k): return True, 'active_trader not available'
     def run_position_monitor(*a, **k): return []
 
+# CLOB order book for real bid/ask depth
+try:
+    import clob_book
+    HAS_CLOB_BOOK = True
+except ImportError:
+    HAS_CLOB_BOOK = False
+
 # Ruflo monitor agents (pre-trade validator, position monitor, analyst, scanner)
 try:
     from ruflo_monitor import (PreTradeValidator, PositionMonitor as RufloPositionMonitor,
@@ -848,7 +855,12 @@ def _build_signals(weather_markets, weather_cities):
                 _yes_mp = float(_tk.get('price', 0) or 0)
                 break
         mp = round(_yes_mp * 100, 1) if _yes_mp > 0 else max(5, min(95, our_prob))
-        ev = round(our_prob - mp, 1)
+        ev = round(our_prob - mp, 1)  # probability edge (percentage points)
+        # Dollar EV: expected return per dollar risked = (p - P) / P
+        # This properly weights cheap vs expensive contracts
+        _p = our_prob / 100.0
+        _P = max(0.01, mp / 100.0)
+        ev_dollar = round((_p - _P) / _P * 100, 1)  # as percentage return on capital
         is_f = p.get("is_f", False)
         df = round(ftemp * 9 / 5 + 32, 1) if p.get("is_f") else round(ftemp, 1)
         unit = "F" if is_f else "C"
@@ -861,7 +873,8 @@ def _build_signals(weather_markets, weather_cities):
             "city": p["city"], "metric": p["metric"],
             "signal": sig_type, "confidence": conf,
             "our_prob": our_prob, "market_price": round(mp, 1),
-            "theo_ev": ev, "forecast": df, "unit": unit,
+            "theo_ev": ev, "ev_dollar": ev_dollar, "forecast": df, "unit": unit,
+            "ftemp_c": round(ftemp, 3), "threshold_c": p["threshold_c"],
             "threshold": p["threshold"], "sigma": round(sigma, 2),
             "agreement": agreement, "models": ["GFS", "ECMWF", "UKMO", "MF"],
             "kelly": kelly, "active": mkt.get("active", True),
@@ -871,7 +884,8 @@ def _build_signals(weather_markets, weather_cities):
             "condition_id": mkt.get("condition_id", ""),
             "tokens": mkt.get("tokens", []),
         })
-    signals.sort(key=lambda s: abs(s["theo_ev"]), reverse=True)
+    # Rank by dollar EV (cost-aware edge), not raw probability edge
+    signals.sort(key=lambda s: abs(s.get("ev_dollar", 0)), reverse=True)
     return signals
 
 
@@ -1184,6 +1198,9 @@ _auto_trade_config = {
 _paper_trades = []
 _traded_tokens = set()
 _trade_cycle_log = []  # Cycle log for /api/trade-debug monitoring
+_city_day_exposure = {}  # {("city", "YYYY-MM-DD"): total_usd} — exposure cap tracking
+_MAX_CITY_DAY_EXPOSURE = 50  # Max $50 deployed per city per day
+_MAX_ADJACENT_BINS = 3  # Max trades on adjacent temperature bins for same city/day
 
 def _run_auto_trade_cycle():
     """Execute one auto-trade cycle: get signals, filter, place orders."""
@@ -1329,6 +1346,48 @@ def _run_auto_trade_cycle():
                 logger.warning("IntelligenceFeed cycle failed: %s", e)
                 _ruflo_coordinator.report_agent_status('intelligence_feed', False, e)
 
+        # ── Recalculate probabilities using calibrated sigma ──────────────
+        # enrich_signals_phase3 adjusts sigma per station via AccuracyTracker.
+        # Now recompute our_prob, theo_ev, ev_dollar with the updated sigma.
+        _recal = 0
+        for sig in sigs:
+            _new_sigma = sig.get('sigma', 0)
+            _old_sigma = sig.get('intel_sigma_old', _new_sigma)
+            if _new_sigma <= 0 or _new_sigma == _old_sigma:
+                continue  # no adjustment or bad data
+            _fc = sig.get('ftemp_c')
+            _tc = sig.get('threshold_c')
+            _dir = sig.get('direction', 'exact')
+            if _fc is None or _tc is None:
+                continue
+            # Recompute probability with adjusted sigma
+            if _dir == 'exact':
+                z_hi = (_tc + 0.5 - _fc) / _new_sigma
+                z_lo = (_tc - 0.5 - _fc) / _new_sigma
+                new_prob = round((_ncdf(z_hi) - _ncdf(z_lo)) * 100, 1)
+            elif _dir == 'above':
+                z = (_fc - _tc) / _new_sigma
+                new_prob = round(_ncdf(z) * 100, 1)
+            else:
+                z = (_tc - _fc) / _new_sigma
+                new_prob = round(_ncdf(z) * 100, 1)
+            new_prob = max(0.1, min(99.9, new_prob))
+            mp = sig.get('market_price', 50)
+            new_ev = round(new_prob - mp, 1)
+            _P = max(0.01, mp / 100.0)
+            new_ev_dollar = round((new_prob / 100.0 - _P) / _P * 100, 1)
+            new_kelly = round(max(0, (new_prob / 100 * (100 / max(0.1, mp)) - 1) / ((100 / max(0.1, mp)) - 1) * 100), 1) if mp > 0 else 0
+            new_sig = "SKIP" if abs(new_ev) < 5 else ("BUY YES" if new_ev > 0 else "BUY NO")
+            sig['our_prob'] = new_prob
+            sig['theo_ev'] = new_ev
+            sig['ev_dollar'] = new_ev_dollar
+            sig['kelly'] = new_kelly
+            sig['signal'] = new_sig
+            sig['sigma_recalculated'] = True
+            _recal += 1
+        if _recal:
+            logger.info("Sigma recalibration: updated %d/%d signals with station-specific sigma", _recal, len(sigs))
+
         # Agent 10: RufloCoordinator - cross-agent evaluation and unified decisions
         if RUFLO_AVAILABLE:
             try:
@@ -1371,7 +1430,7 @@ def _run_auto_trade_cycle():
                      and s.get("tokens")
                      and s.get("market_price", 0) >= 5  # Skip penny markets (<$0.05) — no liquidity, inflated EV
                      and s.get("coordinator_verdict", "trade") not in ("veto", "cooldown")]
-        tradeable.sort(key=lambda s: s["theo_ev"], reverse=True)
+        tradeable.sort(key=lambda s: s.get("ev_dollar", s["theo_ev"]), reverse=True)
         _trade_cycle_log.append({"ts": datetime.now(timezone.utc).isoformat(), "status": "running", "sigs": len(sigs), "tradeable": len(tradeable), "wm": len(wm)})
         if len(_trade_cycle_log) > 30: _trade_cycle_log.pop(0)
         logger.info("Auto-trade: %d signals -> %d tradeable (ev>=%s kelly>=%s)", len(sigs), len(tradeable), cfg["min_ev"], cfg["min_kelly"])
@@ -1410,6 +1469,27 @@ def _run_auto_trade_cycle():
             if token_id in _traded_tokens:
                 logger.debug("TRADE_SKIP: %s | token already traded", sig.get('city',''))
                 continue  # Already have an order on this token
+            # Exposure cap: limit total USD deployed per city per day
+            _city = sig.get('city', 'unknown')
+            _today_str = datetime.now(timezone.utc).strftime('%Y-%m-%d')
+            _city_key = (_city.lower(), _today_str)
+            _current_exposure = _city_day_exposure.get(_city_key, 0)
+            if _current_exposure >= _MAX_CITY_DAY_EXPOSURE:
+                logger.info("EXPOSURE_CAP: %s | $%.0f already deployed today (cap=$%d)", _city, _current_exposure, _MAX_CITY_DAY_EXPOSURE)
+                continue
+            # Post-peak same-day cutoff: don't open new positions on same-day
+            # markets after 5pm local (peak temp already locked in, no edge left)
+            _q_lower = sig.get("question", "").lower()
+            _utc_hour = datetime.now(timezone.utc).hour
+            _est_hour = (_utc_hour - 5) % 24  # rough EST approximation
+            _dm_check = _re.search(r'(?:march|april|may|june|july|aug|sep|oct|nov|dec|jan|feb)\s+(\d+)', _q_lower)
+            _is_same_day = False
+            if _dm_check:
+                _qday = int(_dm_check.group(1))
+                _is_same_day = _qday == datetime.now(timezone.utc).day
+            if _is_same_day and _est_hour >= 17:
+                logger.info("POST_PEAK: %s | same-day market, local hour %d >= 17, skipping new entry", _city, _est_hour)
+                continue
             # Entry kill switch: skip if physically impossible to reach temperature
             if ACTIVE_TRADER_AVAILABLE:
                 _direction = sig.get("direction", "exact")
@@ -1440,10 +1520,35 @@ def _run_auto_trade_cycle():
                     continue
             our_prob = sig.get("our_prob", 50) / 100.0
             mkt_price = sig.get("market_price", 50) / 100.0
+            # CLOB book check: compute edge-at-fill with real depth
+            _clob_info = None
+            if HAS_CLOB_BOOK:
+                try:
+                    _book = clob_book.get_book(token_id)
+                    if _book:
+                        _book_side = "buy_yes" if sig_type == "BUY YES" else "buy_no"
+                        _clob_info = clob_book.edge_at_fill(
+                            our_prob if sig_type == "BUY YES" else (1 - our_prob),
+                            _book, _book_side, cfg["max_size"])
+                        if _clob_info and not _clob_info.get("tradeable"):
+                            logger.info("CLOB_SKIP: %s | %s (spread=%.1f%% depth=$%.0f)",
+                                _city, _clob_info.get("reason", "?"),
+                                _clob_info.get("spread_pct", 0),
+                                _clob_info.get("ask_depth", 0))
+                            continue
+                except Exception as _clob_err:
+                    logger.debug("CLOB book check failed for %s: %s", _city, _clob_err)
             if sig_type == "BUY YES":
-                price = round(min(mkt_price + 0.01, our_prob - 0.02), 2)
+                # Use CLOB fill price if available, else estimate from market price
+                if _clob_info and _clob_info.get("fill_price"):
+                    price = round(_clob_info["fill_price"], 2)
+                else:
+                    price = round(min(mkt_price + 0.01, our_prob - 0.02), 2)
             else:
-                price = round(max(mkt_price - 0.01, our_prob + 0.02), 2)
+                if _clob_info and _clob_info.get("fill_price"):
+                    price = round(_clob_info["fill_price"], 2)
+                else:
+                    price = round(max(mkt_price - 0.01, our_prob + 0.02), 2)
             price = max(0.01, min(0.99, price))
             # Size = dollars to spend / price = number of shares
             # Polymarket min order is $1, so ensure size * price >= 1
@@ -1463,10 +1568,16 @@ def _run_auto_trade_cycle():
                 "kelly": sig.get("kelly", 0),
                 "our_prob": sig.get("our_prob", 0),
                 "mkt_price": sig.get("market_price", 0),
+                "ev_dollar": sig.get("ev_dollar", 0),
+                "clob_spread": _clob_info.get("spread_pct", 0) if _clob_info else None,
+                "clob_edge_at_fill": _clob_info.get("edge_at_fill", 0) if _clob_info else None,
             }
             if cfg["paper_mode"]:
                 trade_info["mode"] = "PAPER"
                 _traded_tokens.add(token_id)
+                # Track city/day exposure
+                _spend = price * size
+                _city_day_exposure[_city_key] = _city_day_exposure.get(_city_key, 0) + _spend
                 _paper_trades.append(trade_info)
                 if len(_paper_trades) > 200:
                     _paper_trades = _paper_trades[-200:]
