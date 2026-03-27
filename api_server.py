@@ -1114,7 +1114,58 @@ def _run_auto_trade_cycle():
     if not _auto_trade_active:
         return
     try:
+        # ── Auto-scan: refresh markets if empty or stale (>5 min) ────
         wm = _state.get("weather_markets", [])
+        _last = _state.get("last_scan")
+        _stale = True
+        if _last:
+            try:
+                from datetime import datetime, timezone
+                _age = (datetime.now(timezone.utc) - datetime.fromisoformat(_last)).total_seconds()
+                _stale = _age > 300  # 5 minutes
+            except Exception:
+                _stale = True
+        if (not wm or _stale) and HAS_GAMMA:
+            try:
+                raw = _gamma_get_markets()
+                _state["markets_cache"] = raw
+                weather = []
+                for m in raw:
+                    _tokens = m.get("tokens", [])
+                    _yes_p = 0.0
+                    _no_p = 0.0
+                    for _t in _tokens:
+                        _out = str(_t.get("outcome", "")).lower()
+                        _pr = float(_t.get("price", 0) or 0)
+                        if _out == "yes":
+                            _yes_p = _pr
+                        elif _out == "no":
+                            _no_p = _pr
+                    weather.append({
+                        "slug": m.get("slug", m.get("market_slug", "")),
+                        "question": m.get("question", m.get("category", "")),
+                        "city": m.get("city", ""),
+                        "station": m.get("station", ""),
+                        "category": m.get("category", ""),
+                        "outcomes": m.get("outcomes", []),
+                        "active": m.get("active", True),
+                        "end_date": m.get("end_date_iso", m.get("resolution_time", "")),
+                        "prices": m.get("prices", {}),
+                        "tokens": _tokens,
+                        "confidence": m.get("confidence", 0),
+                        "yes_price": _yes_p,
+                        "no_price": _no_p,
+                        "best_side": "YES" if _yes_p < _no_p else "NO",
+                        "best_edge": abs(_yes_p - _no_p) if (_yes_p + _no_p) > 0 else 0,
+                        "theoretical_full_ev": 0,
+                        "regime": m.get("category", ""),
+                    })
+                _state["weather_markets"] = weather
+                _state["last_scan"] = datetime.now(timezone.utc).isoformat()
+                wm = weather
+                logger.info("Auto-scan: refreshed %d weather markets", len(wm))
+            except Exception as _scan_err:
+                logger.warning("Auto-scan failed: %s", _scan_err)
         wx_cities = _weather_cache["data"].get("cities", []) if _weather_cache["data"] else []
         sigs = _build_signals(wm, wx_cities)
         if not sigs:
