@@ -21,7 +21,10 @@ logger = logging.getLogger(__name__)
 # Constants
 MIN_BOOK_EDGE = 0.05  # 5% minimum imbalance before flagging
 FULL_ARB_THRESHOLD = 0.06  # 6% for full all-bins arbitrage
-POLYMARKET_FEE = 0.02  # 2% taker fee estimate
+# Polymarket CLOB fees are in bps, not percent — many weather markets are fee-free.
+# We use a conservative spread+cost estimate rather than a fixed fee percentage.
+# This is the estimated round-trip execution cost per bin (spread + any fees).
+EXECUTION_COST_PER_BIN = 0.01  # 1 cent per bin round-trip (conservative estimate)
 MAX_TRADES_PER_SCAN = 8
 SCAN_INTERVAL_S = 120
 
@@ -157,10 +160,9 @@ class DutchBookScanner:
         else:
             direction = "underbooked"
 
-        # Calculate net edge after fees
-        # Round-trip fee per bin traded: 2 * POLYMARKET_FEE per transaction
+        # Calculate net edge after execution costs (spread + fees per bin)
         num_bins_to_trade = min(3, len(bins))  # Rank top 3 mispriced bins
-        net_edge = imbalance - (num_bins_to_trade * POLYMARKET_FEE * 2)
+        net_edge = imbalance - (num_bins_to_trade * EXECUTION_COST_PER_BIN)
 
         # Only executable if net edge > 1% after all fees
         executable = net_edge > 0.01

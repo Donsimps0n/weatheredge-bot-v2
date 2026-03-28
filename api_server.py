@@ -6,6 +6,7 @@ Lightweight Flask API that exposes bot data to the Vercel dashboard.
 import os
 import time
 import logging
+import subprocess
 from datetime import datetime, timezone, timedelta
 
 logging.basicConfig(
@@ -13,6 +14,15 @@ logging.basicConfig(
     format="%(asctime)s %(levelname)s %(name)s %(message)s",
 )
 logger = logging.getLogger("api_server")
+
+# ── Git commit hash for runtime traceability ──
+try:
+    GIT_COMMIT = subprocess.check_output(
+        ["git", "rev-parse", "--short", "HEAD"],
+        stderr=subprocess.DEVNULL, timeout=5
+    ).decode().strip()
+except Exception:
+    GIT_COMMIT = "unknown"
 
 # ---------- Flask setup ----------
 try:
@@ -421,7 +431,7 @@ td{{padding:8px 12px;border-bottom:1px solid #1e293b0a;color:#cbd5e1}}
 
 @app.route("/api/health")
 def health():
-    return jsonify({"status": "ok", "uptime_s": int(time.time() - _boot)})
+    return jsonify({"status": "ok", "uptime_s": int(time.time() - _boot), "commit": GIT_COMMIT})
 
 
 @app.route("/api/status")
@@ -2183,10 +2193,14 @@ def _run_auto_trade_cycle():
         # ── Execute agent trades: Sniper + GFS + ObsConfirm + Hedge ──
         # NOTE: Cross-City and Dutch Book are now FEATURE producers, not trade generators.
         # They tag signals with features; the aggregator (coordinator) decides.
+        # AUDIT FIX: Agent trades now pass through the SAME gates as coordinator trades:
+        #   1. Exposure cap  2. Post-peak cutoff  3. Entry kill switch
+        #   4. PreTradeValidator  5. CLOB book check
         _combined_agent_trades = (_snipe_trades + _gfs_delta_trades + _obs_confirm_trades
                                   + _hedge_trades)
         if _combined_agent_trades:
             _agent_traded = 0
+            _agent_rejected = 0
             for _at in _combined_agent_trades:
                 if _agent_traded >= 8:
                     break
@@ -2201,6 +2215,82 @@ def _run_auto_trade_cycle():
                 _at_oprob = _at.get('our_prob', 0)
                 _at_corr = _at.get('corrected_prob', _at_oprob)
                 _at_bias = _at.get('bias_correction_f', 0)
+
+                # ── GATE 1: Exposure cap ──
+                _at_today_str = datetime.now(timezone.utc).strftime('%Y-%m-%d')
+                _at_city_key = (_at_city.lower(), _at_today_str)
+                _at_exposure = _city_day_exposure.get(_at_city_key, 0)
+                if _at_exposure >= _MAX_CITY_DAY_EXPOSURE:
+                    logger.info("AGENT_EXPOSURE_CAP: %s/%s | $%.0f deployed (cap=$%d)",
+                                _at_sig, _at_city, _at_exposure, _MAX_CITY_DAY_EXPOSURE)
+                    _agent_rejected += 1
+                    continue
+
+                # ── GATE 2: Post-peak same-day cutoff ──
+                _at_q_lower = _at.get('question', '').lower()
+                _at_utc_hour = datetime.now(timezone.utc).hour
+                _at_est_hour = (_at_utc_hour - 5) % 24
+                _at_dm = _re.search(r'(?:march|april|may|june|july|aug|sep|oct|nov|dec|jan|feb)\s+(\d+)', _at_q_lower)
+                _at_same_day = False
+                if _at_dm:
+                    _at_qday = int(_at_dm.group(1))
+                    _at_same_day = _at_qday == datetime.now(timezone.utc).day
+                if _at_same_day and _at_est_hour >= 17:
+                    logger.info("AGENT_POST_PEAK: %s/%s | same-day, hour %d >= 17",
+                                _at_sig, _at_city, _at_est_hour)
+                    _agent_rejected += 1
+                    continue
+
+                # ── GATE 3: Entry kill switch ──
+                if ACTIVE_TRADER_AVAILABLE and _at_sig != 'HEDGE':
+                    # Parse bin range from question for kill switch check
+                    _at_bin_match = _re.search(r'between\s+(\d+).*?and\s+(\d+)', _at_q_lower)
+                    if _at_bin_match:
+                        _at_bin_lo = float(_at_bin_match.group(1))
+                        _at_bin_hi = float(_at_bin_match.group(2))
+                    else:
+                        _at_bin_lo, _at_bin_hi = 0.0, 999.0  # Can't parse, allow through
+                    _at_local_hour = (_at_utc_hour - 5) % 24
+                    _at_ok, _at_kill_reason = should_enter(_at_city, _at_bin_lo, _at_bin_hi, _at_local_hour)
+                    if not _at_ok:
+                        logger.warning("AGENT_ENTRY_KILL: %s/%s | %s", _at_sig, _at_city, _at_kill_reason)
+                        _agent_rejected += 1
+                        continue
+
+                # ── GATE 4: PreTradeValidator ──
+                if RUFLO_AVAILABLE and _at_sig != 'HEDGE':
+                    _at_ruflo_sig = {
+                        'confidence': _at.get('confidence', _at_edge),
+                        'theo_ev': _at_edge,
+                        'ev': _at_edge,
+                        'end_date': _at.get('end_date', ''),
+                        'size': _at_sz,
+                    }
+                    _at_v_ok, _at_v_reason = _ruflo_validator.validate(_at_ruflo_sig)
+                    if not _at_v_ok:
+                        logger.warning("AGENT_RUFLO_REJECT: %s/%s | %s", _at_sig, _at_city, _at_v_reason)
+                        _agent_rejected += 1
+                        continue
+
+                # ── GATE 5: CLOB book check ──
+                if HAS_CLOB_BOOK and _at_sig != 'HEDGE':
+                    try:
+                        _at_book = clob_book.get_book(_at_tok)
+                        if _at_book:
+                            _at_our_prob_dec = _at_oprob / 100.0 if _at_oprob > 1 else _at_oprob
+                            _at_clob_info = clob_book.edge_at_fill(
+                                _at_our_prob_dec, _at_book, "buy_yes", _at_sz)
+                            if _at_clob_info and not _at_clob_info.get("tradeable"):
+                                logger.info("AGENT_CLOB_SKIP: %s/%s | %s (spread=%.1f%%)",
+                                            _at_sig, _at_city,
+                                            _at_clob_info.get("reason", "?"),
+                                            _at_clob_info.get("spread_pct", 0))
+                                _agent_rejected += 1
+                                continue
+                    except Exception as _at_clob_err:
+                        logger.debug("AGENT_CLOB check failed %s/%s: %s", _at_sig, _at_city, _at_clob_err)
+
+                # ── All gates passed — execute ──
                 if cfg.get('paper_mode', True):
                     _at_trade = {
                         'token_id': _at_tok,
@@ -2251,12 +2341,15 @@ def _run_auto_trade_cycle():
                                         _at_sig, _at_city, _at_px, _at_sz, _at_edge, str(_at_order)[:80])
                         except Exception as _at_err:
                             logger.error("%s order error %s: %s", _at_sig, _at_city, _at_err)
+                # Track exposure for agent trades too
+                _at_spend = _at_px * _at_sz
+                _city_day_exposure[_at_city_key] = _at_exposure + _at_spend
                 _traded_tokens.add(_at_tok)
                 _agent_traded += 1
                 traded += 1
-            if _agent_traded:
-                logger.info("ALL_AGENTS: executed %d agent trades this cycle (snipe=%d gfs=%d obs=%d hedge=%d)",
-                            _agent_traded, len(_snipe_trades), len(_gfs_delta_trades),
+            if _agent_traded or _agent_rejected:
+                logger.info("ALL_AGENTS: executed %d, rejected %d agent trades this cycle (snipe=%d gfs=%d obs=%d hedge=%d)",
+                            _agent_traded, _agent_rejected, len(_snipe_trades), len(_gfs_delta_trades),
                             len(_obs_confirm_trades), len(_hedge_trades))
 
         #ÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂ Agent 11 & 12: Exit Strategy (ProfitTaker + RiskCutter) ÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂ
@@ -2988,6 +3081,7 @@ _start_auto_trade_timer()
 _start_position_monitor()
 
 if __name__ == "__main__":
-    _log(f"WeatherEdge API v2 starting on port {PORT}")
+    _log(f"WeatherEdge API v2 starting on port {PORT} | commit={GIT_COMMIT}")
+    logger.info("BUILD_INFO: commit=%s start_time=%s", GIT_COMMIT, datetime.now(timezone.utc).isoformat())
     _start_scheduler_thread()
     app.run(host="0.0.0.0", port=PORT, debug=False)
