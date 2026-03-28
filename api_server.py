@@ -120,6 +120,19 @@ try:
 except ImportError:
     logger.warning("gfs_refresh not available")
 
+# Observation Confirmation agent (highest-conviction: live METAR confirms/kills bins)
+HAS_OBS_CONFIRM = False
+_obs_confirm = None
+try:
+    from obs_confirm import ObsConfirmAgent
+    _obs_confirm = ObsConfirmAgent(
+        shared_state=_ruflo_shared if RUFLO_AVAILABLE else None,
+    )
+    HAS_OBS_CONFIRM = True
+    logger.info("Observation Confirmation agent loaded (58 cities)")
+except ImportError:
+    logger.warning("obs_confirm not available")
+
 # Register new agents in shared state
 if RUFLO_AVAILABLE:
     if HAS_STATION_BIAS:
@@ -128,6 +141,8 @@ if RUFLO_AVAILABLE:
         _ruflo_shared.register_agent('bin_sniper', 'New market detection + bias-corrected snipe trading')
     if HAS_GFS_REFRESH:
         _ruflo_shared.register_agent('gfs_refresh', 'GFS model update detection + delta repricing')
+    if HAS_OBS_CONFIRM:
+        _ruflo_shared.register_agent('obs_confirm', 'Live METAR observation confirmation/kill for 58 cities')
 
 app = Flask(__name__)
 CORS(app, origins=[
@@ -1594,6 +1609,29 @@ def _run_auto_trade_cycle():
             except Exception as _gfs_err:
                 logger.error("GFS_REFRESH error: %s", _gfs_err)
 
+        # ── Agent 16: Observation Confirmation — live METAR confirms/kills bins ──
+        _obs_confirm_trades = []
+        if HAS_OBS_CONFIRM and _obs_confirm:
+            try:
+                _obs_confirm_trades = _obs_confirm.check_and_trade(
+                    all_signals=sigs,
+                    open_trades=_paper_trades,
+                    sentinel=_ruflo_sentinel if RUFLO_AVAILABLE else None,
+                    bias_module=station_bias if HAS_STATION_BIAS else None,
+                )
+                if _obs_confirm_trades:
+                    logger.info("OBS_CONFIRM: %d trades from live observation confirmation", len(_obs_confirm_trades))
+                # Share obs data with active_trader exit engine
+                try:
+                    from active_trader import set_shared_obs
+                    _live_obs = _obs_confirm.get_live_obs()
+                    if _live_obs:
+                        set_shared_obs(_live_obs)
+                except Exception:
+                    pass
+            except Exception as _obs_err:
+                logger.error("OBS_CONFIRM error: %s", _obs_err)
+
         # SharedState: record cycle completion
         if RUFLO_AVAILABLE:
             try:
@@ -1923,8 +1961,8 @@ def _run_auto_trade_cycle():
             except Exception as _yh_err:
                 logger.error("RUFLO_YES_HARVEST scan error: %s", _yh_err)
 
-        # ── Agent 14+15: Execute Sniper + GFS Delta trades ──────────────
-        _combined_agent_trades = _snipe_trades + _gfs_delta_trades
+        # ── Agent 14+15+16: Execute Sniper + GFS Delta + ObsConfirm trades ──
+        _combined_agent_trades = _snipe_trades + _gfs_delta_trades + _obs_confirm_trades
         if _combined_agent_trades:
             _agent_traded = 0
             for _at in _combined_agent_trades:
@@ -1995,7 +2033,7 @@ def _run_auto_trade_cycle():
                 _agent_traded += 1
                 traded += 1
             if _agent_traded:
-                logger.info("SNIPER+GFS: executed %d agent trades this cycle", _agent_traded)
+                logger.info("SNIPER+GFS+OBS: executed %d agent trades this cycle", _agent_traded)
 
         #ÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂ Agent 11 & 12: Exit Strategy (ProfitTaker + RiskCutter) ÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂ
         if RUFLO_AVAILABLE and _paper_trades:
@@ -2578,6 +2616,21 @@ def api_bias_station(station):
     bias = station_bias.get_station_bias(station.upper())
     return jsonify({"ok": True, **bias})
 
+@app.route("/api/agents/obs")
+def api_obs_confirm_stats():
+    """Observation Confirmation agent stats and recent trades."""
+    if not HAS_OBS_CONFIRM or not _obs_confirm:
+        return jsonify({"ok": False, "error": "Obs Confirm agent not available"}), 503
+    return jsonify({"ok": True, **_obs_confirm.get_stats()})
+
+@app.route("/api/agents/obs/live")
+def api_obs_live():
+    """Live observation data from ObsConfirm agent."""
+    if not HAS_OBS_CONFIRM or not _obs_confirm:
+        return jsonify({"ok": False, "error": "Obs Confirm agent not available"}), 503
+    live = _obs_confirm.get_live_obs()
+    return jsonify({"ok": True, "cities_with_obs": len(live), "observations": live})
+
 @app.route("/api/agents/overview")
 def api_agents_overview():
     """Overview of all agent statuses including new ones."""
@@ -2604,6 +2657,15 @@ def api_agents_overview():
         agents['station_bias'] = {
             'active': True, 'stations_tracked': len(biases),
             'significant_biases': len(sig),
+        }
+    if HAS_OBS_CONFIRM and _obs_confirm:
+        s = _obs_confirm.get_stats()
+        agents['obs_confirm'] = {
+            'active': True, 'checks': s.get('total_checks', 0),
+            'confirmations': s.get('confirmations', 0),
+            'kills': s.get('kills', 0),
+            'trades': s.get('trades_generated', 0),
+            'cities_with_obs': s.get('cities_with_obs', 0),
         }
     if RUFLO_AVAILABLE:
         agents['ruflo'] = {

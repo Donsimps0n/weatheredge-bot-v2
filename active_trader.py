@@ -2,15 +2,20 @@
 WeatherEdge Active Trader - Ruflo-integrated position management engine.
 Implements the 4 rules discovered in simulation:
   Rule 1: Entry kill switch - skip if max_achievable < bin_lo
-  Rule 2: Fact-based exit - close when obs proves bin impossible  
+  Rule 2: Fact-based exit - close when obs proves bin impossible
   Rule 3: Hold winners to full $1.00 payout
   Rule 4: Momentum exit for international cities (no NWS obs)
+
+Now enhanced: uses METAR data for ALL 58 cities globally, not just 12
+US NWS stations. International cities now get the same fact-based exit
+logic as US cities.
 """
 import logging, time, requests
 from datetime import datetime, timezone
 
 log = logging.getLogger('active_trader')
 
+# Legacy NWS-only stations (still used as primary for US cities)
 NWS_STATIONS = {
     'Atlanta': 'KATL', 'Miami': 'KMIA', 'Chicago': 'KORD',
     'New York': 'KLGA', 'Los Angeles': 'KLAX', 'Dallas': 'KDFW',
@@ -18,28 +23,111 @@ NWS_STATIONS = {
     'Phoenix': 'KPHX', 'Houston': 'KIAH', 'San Francisco': 'KSFO',
 }
 
+# Full ICAO mapping for ALL 58 cities — enables global fact-based exits
+ALL_STATIONS = {
+    # US (14)
+    'Atlanta': 'KATL', 'Miami': 'KMIA', 'Chicago': 'KORD',
+    'New York': 'KLGA', 'Los Angeles': 'KLAX', 'Dallas': 'KDFW',
+    'Seattle': 'KSEA', 'Denver': 'KDEN', 'Boston': 'KBOS',
+    'Phoenix': 'KPHX', 'Houston': 'KIAH', 'San Francisco': 'KSFO',
+    'Minneapolis': 'KMSP', 'Las Vegas': 'KLAS',
+    # Canada
+    'Toronto': 'CYYZ', 'Vancouver': 'CYVR', 'Montreal': 'CYUL',
+    # Mexico
+    'Mexico City': 'MMMX',
+    # Europe
+    'London': 'EGLL', 'Dublin': 'EIDW', 'Paris': 'LFPG',
+    'Amsterdam': 'EHAM', 'Berlin': 'EDDF', 'Frankfurt': 'EDDF',
+    'Madrid': 'LEMD', 'Barcelona': 'LEIB', 'Rome': 'LIRF',
+    'Milan': 'LIML', 'Athens': 'LGAV', 'Lisbon': 'LPPT',
+    'Stockholm': 'ESSA', 'Copenhagen': 'EKCH', 'Moscow': 'UUWW',
+    'Warsaw': 'EPWA',
+    # Middle East
+    'Dubai': 'OMDB', 'Istanbul': 'LTAC', 'Tel Aviv': 'LLBG',
+    # Asia
+    'Mumbai': 'VABB', 'Delhi': 'VIDP', 'Bangalore': 'VOBL',
+    'Singapore': 'WSSS', 'Bangkok': 'VTBS', 'Hong Kong': 'VHHH',
+    'Tokyo': 'RJTT', 'Seoul': 'RKSI', 'Shanghai': 'ZSPD',
+    'Beijing': 'ZBAA',
+    # Oceania
+    'Sydney': 'YSSY', 'Melbourne': 'YMML', 'Auckland': 'NZAA',
+    # South America
+    'São Paulo': 'SBGR', 'Sao Paulo': 'SBGR', 'Rio de Janeiro': 'SBGL',
+    'Buenos Aires': 'SAEZ', 'Santiago': 'SCEL',
+    # Africa
+    'Cairo': 'HECA', 'Johannesburg': 'FAOR', 'Lagos': 'DNAA',
+}
+
+METAR_API = 'https://aviationweather.gov/api/data/metar'
+
 _obs_cache = {}
 _obs_ts = {}
 
+# ObsConfirm agent can inject its observations here for cross-agent sharing
+_shared_obs: dict = {}  # city -> temp_f (set by obs_confirm agent)
+
+
+def set_shared_obs(obs_data: dict):
+    """Called by ObsConfirmAgent to share its observations with the exit engine."""
+    global _shared_obs
+    _shared_obs = obs_data
+
+
 def get_obs_temp_f(city):
-    """Fetch latest NWS observation in Fahrenheit. Cached 15min."""
-    station = NWS_STATIONS.get(city)
-    if not station:
-        return None
+    """Fetch latest observation in Fahrenheit for ANY city globally.
+
+    Priority:
+    1. Shared observations from ObsConfirmAgent (freshest, already polled)
+    2. NWS API (US cities only — most reliable)
+    3. METAR API via aviationweather.gov (all cities globally)
+    4. Cache (stale data better than nothing)
+    """
     now = time.time()
+
+    # Source 1: Shared observations from ObsConfirm agent
+    if city in _shared_obs:
+        return _shared_obs[city]
+
+    # Check cache first
     if city in _obs_cache and now - _obs_ts.get(city, 0) < 900:
         return _obs_cache[city]
-    try:
-        r = requests.get(f'https://api.weather.gov/stations/{station}/observations/latest', timeout=8)
-        if r.ok:
-            tc = r.json()['properties']['temperature']['value']
-            if tc is not None:
-                tf = round(tc * 9/5 + 32, 1)
-                _obs_cache[city] = tf
-                _obs_ts[city] = now
-                return tf
-    except Exception as e:
-        log.warning('OBS fetch failed for %s: %s', city, e)
+
+    # Source 2: NWS API for US cities (most reliable)
+    station = NWS_STATIONS.get(city)
+    if station:
+        try:
+            r = requests.get(f'https://api.weather.gov/stations/{station}/observations/latest', timeout=8)
+            if r.ok:
+                tc = r.json()['properties']['temperature']['value']
+                if tc is not None:
+                    tf = round(tc * 9/5 + 32, 1)
+                    _obs_cache[city] = tf
+                    _obs_ts[city] = now
+                    return tf
+        except Exception as e:
+            log.debug('NWS fetch failed for %s: %s', city, e)
+
+    # Source 3: METAR API for ALL cities (including international)
+    icao = ALL_STATIONS.get(city)
+    if icao and (city not in _obs_ts or now - _obs_ts.get(city, 0) > 600):
+        try:
+            r = requests.get(METAR_API, params={
+                'ids': icao, 'format': 'json', 'hours': 1
+            }, timeout=10)
+            if r.ok:
+                data = r.json()
+                if data and isinstance(data, list):
+                    for obs in data:
+                        tc = obs.get('temp')
+                        if tc is not None:
+                            tf = round(float(tc) * 9/5 + 32, 1)
+                            _obs_cache[city] = tf
+                            _obs_ts[city] = now
+                            log.info('METAR obs for %s (%s): %.1fF', city, icao, tf)
+                            return tf
+        except Exception as e:
+            log.debug('METAR fetch failed for %s (%s): %s', city, icao, e)
+
     return _obs_cache.get(city)
 
 def max_achievable_today(obs_temp_f, hour_local):
