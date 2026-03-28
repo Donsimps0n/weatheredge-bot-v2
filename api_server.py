@@ -178,6 +178,7 @@ body{{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
 .metric{{font-size:32px;font-weight:700;color:#f1f5f9}}
 .metric.green{{color:#4ade80}} .metric.red{{color:#f87171}} .metric.blue{{color:#60a5fa}}
 .sub{{font-size:13px;color:#64748b;margin-top:4px}}
+.pnl-section{{padding:20px 30px}}.pnl-section h2{{font-size:16px;color:#94a3b8;margin-bottom:12px}}#pnl-table th,#pnl-table td{{padding:7px 10px;text-align:left;border-bottom:1px solid #1e293b}}#pnl-table th{{font-size:11px;text-transform:uppercase;letter-spacing:.5px;color:#64748b}}
 .agents{{padding:20px 30px}}
 .agents h2{{font-size:16px;color:#94a3b8;margin-bottom:12px}}
 .agent-grid{{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px}}
@@ -201,6 +202,62 @@ td{{padding:8px 12px;border-bottom:1px solid #1e293b0a;color:#cbd5e1}}
   <div class="card"><h3>Weather Markets</h3><div class="metric">{_n_markets}</div><div class="sub">{_n_cities} cities tracked</div></div>
   <div class="card"><h3>Last Cycle</h3><div class="metric" style="font-size:18px">{_last_log.get('status','Ã¢ÂÂ') if isinstance(_last_log, dict) else 'Ã¢ÂÂ'}</div><div class="sub">Sigs: {_last_log.get('sigs','Ã¢ÂÂ') if isinstance(_last_log, dict) else 'Ã¢ÂÂ'} &bull; Tradeable: {_last_log.get('tradeable','Ã¢ÂÂ') if isinstance(_last_log, dict) else 'Ã¢ÂÂ'}</div></div>
 </div>
+<div class="pnl-section">
+  <h2>Open Positions <span id="pnl-badge" style="font-size:13px;font-weight:400;margin-left:8px;opacity:0.6">loading...</span></h2>
+  <div id="pnl-summary" style="display:flex;gap:16px;flex-wrap:wrap;margin-bottom:12px"></div>
+  <div id="pnl-table-wrap" style="overflow-x:auto">
+    <table id="pnl-table" style="display:none;width:100%;font-size:13px">
+      <tr><th>City</th><th>Signal</th><th>Entry</th><th>Current</th><th>Size</th><th>Cost</th><th>Value</th><th style="min-width:80px">P&amp;L</th><th>P&amp;L %</th></tr>
+    </table>
+  </div>
+</div>
+<script>
+(function loadPnL() {
+  fetch('/api/ledger/open-positions')
+    .then(r => r.json())
+    .then(d => {
+      if (!d.ok) { document.getElementById('pnl-badge').textContent = 'unavailable'; return; }
+      const s = d.summary;
+      const sign = s.unrealized_pnl >= 0 ? '+' : '';
+      const col = s.unrealized_pnl >= 0 ? '#4ade80' : '#f87171';
+      document.getElementById('pnl-badge').innerHTML =
+        '<span style="color:' + col + ';font-weight:600">' + sign + s.unrealized_pnl.toFixed(2) + ' USDC (' + sign + s.pnl_pct.toFixed(2) + '%)</span>' +
+        ' &mdash; ' + d.count + ' open | ' + s.winners + ' up &bull; ' + s.losers + ' down &bull; ' + s.flat + ' flat';
+      const sumDiv = document.getElementById('pnl-summary');
+      sumDiv.innerHTML = [
+        ['Deployed', '$' + s.total_cost.toFixed(2), '#94a3b8'],
+        ['Current Value', '$' + s.total_value.toFixed(2), '#94a3b8'],
+        ['Unrealized P&L', sign + '$' + s.unrealized_pnl.toFixed(2), col],
+        ['Return', sign + s.pnl_pct.toFixed(2) + '%', col],
+        ['Winning', s.winners, '#4ade80'],
+        ['Losing', s.losers, '#f87171'],
+      ].map(([l, v, c]) =>
+        '<div style="background:#1e293b;border-radius:8px;padding:10px 16px;min-width:110px">' +
+        '<div style="font-size:11px;opacity:0.5;margin-bottom:4px">' + l + '</div>' +
+        '<div style="font-size:18px;font-weight:700;color:' + c + '">' + v + '</div></div>'
+      ).join('');
+      const tbody = d.positions.map(p => {
+        const pnlCol = p.unrealized_pnl > 0 ? '#4ade80' : p.unrealized_pnl < 0 ? '#f87171' : '#94a3b8';
+        const pnlSign = p.unrealized_pnl >= 0 ? '+' : '';
+        return '<tr>' +
+          '<td>' + p.city + '</td>' +
+          '<td>' + p.signal + '</td>' +
+          '<td>' + p.entry_price.toFixed(3) + '</td>' +
+          '<td>' + p.current_price.toFixed(3) + '</td>' +
+          '<td>' + p.size + '</td>' +
+          '<td>$' + p.cost.toFixed(2) + '</td>' +
+          '<td>$' + p.current_value.toFixed(2) + '</td>' +
+          '<td style="color:' + pnlCol + ';font-weight:600">' + pnlSign + p.unrealized_pnl.toFixed(3) + '</td>' +
+          '<td style="color:' + pnlCol + ';font-weight:600">' + pnlSign + p.pnl_pct.toFixed(1) + '%</td>' +
+          '</tr>';
+      }).join('');
+      const tbl = document.getElementById('pnl-table');
+      tbl.innerHTML = tbl.rows[0].outerHTML + tbody;
+      tbl.style.display = 'table';
+    })
+    .catch(() => { document.getElementById('pnl-badge').textContent = 'error loading positions'; });
+})();
+</script>
 <div class="agents"><h2>Agent Health</h2><div class="agent-grid">
 """
     for name, alive in _agents.items():
@@ -2085,6 +2142,91 @@ def api_ledger_info():
         "persistent": db_path.startswith("/data"),
         "data_dir_exists": data_dir_exists,
     })
+
+@app.route("/api/ledger/open-positions")
+def api_open_positions():
+    """Live mark-to-market P&L for all open (unresolved) trades."""
+    if not HAS_LEDGER:
+        return jsonify({"ok": False, "error": "Ledger not available"}), 503
+    try:
+        open_trades = trade_ledger.get_unresolved_trades()
+        positions = []
+        total_cost = 0.0
+        total_value = 0.0
+
+        for t in open_trades:
+            token_id = t.get("token_id", "")
+            entry_price = t.get("price", 0)
+            size = t.get("size", 0)
+            cost = round(entry_price * size, 4)
+            signal = t.get("signal", "")
+
+            # Fetch live current price from CLOB order book
+            current_price = entry_price  # fallback
+            current_source = "entry"
+            if HAS_CLOB_BOOK and token_id and len(token_id) > 8:
+                try:
+                    _book = clob_book.get_book(token_id)
+                    if _book:
+                        # For YES/BUY trades use best bid (what we can sell for)
+                        # For NO_HARVEST/YES_HARVEST also use best bid of that side
+                        bids = _book.get("bids", [])
+                        asks = _book.get("asks", [])
+                        if bids:
+                            current_price = float(bids[0]["price"])
+                            current_source = "clob_bid"
+                except Exception:
+                    pass
+
+            current_value = round(current_price * size, 4)
+            unrealized_pnl = round(current_value - cost, 4)
+            pnl_pct = round((current_price - entry_price) / max(entry_price, 0.001) * 100, 2) if entry_price > 0 else 0
+
+            total_cost += cost
+            total_value += current_value
+
+            positions.append({
+                "id": t.get("id"),
+                "city": t.get("city"),
+                "question": t.get("question", "")[:60],
+                "signal": signal,
+                "entry_price": round(entry_price, 4),
+                "current_price": round(current_price, 4),
+                "size": size,
+                "cost": cost,
+                "current_value": current_value,
+                "unrealized_pnl": unrealized_pnl,
+                "pnl_pct": pnl_pct,
+                "current_source": current_source,
+                "ts": t.get("ts"),
+                "ev": t.get("ev"),
+                "our_prob": t.get("our_prob"),
+                "mkt_price": t.get("mkt_price"),
+            })
+
+        # Sort by P&L descending (best performers first)
+        positions.sort(key=lambda p: p["unrealized_pnl"], reverse=True)
+
+        total_unrealized = round(total_value - total_cost, 4)
+        total_pnl_pct = round((total_value - total_cost) / max(total_cost, 0.01) * 100, 2)
+
+        return jsonify({
+            "ok": True,
+            "positions": positions,
+            "count": len(positions),
+            "summary": {
+                "total_cost": round(total_cost, 2),
+                "total_value": round(total_value, 2),
+                "unrealized_pnl": total_unrealized,
+                "pnl_pct": total_pnl_pct,
+                "winners": sum(1 for p in positions if p["unrealized_pnl"] > 0),
+                "losers": sum(1 for p in positions if p["unrealized_pnl"] < 0),
+                "flat": sum(1 for p in positions if p["unrealized_pnl"] == 0),
+            }
+        })
+    except Exception as e:
+        logger.error("open-positions error: %s", e)
+        return jsonify({"ok": False, "error": str(e)}), 500
 
 @app.route("/api/ledger/unresolved")
 def api_ledger_unresolved():
