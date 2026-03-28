@@ -11,20 +11,20 @@ from dataclasses import dataclass
 
 logger = logging.getLogger(__name__)
 
-# Hourly aggression multipliers (ET)
+# Hourly aggression multipliers (ET) - for execution size, conservative in thin books
 AGGRESSION_MULTIPLIERS = {
-    0: 1.15,   # 0-2am: Late night, thinning
-    1: 1.15,
-    2: 1.35,   # 2-5am: Thinnest books, best fills
-    3: 1.35,
-    4: 1.35,
-    5: 1.20,   # 5-7am: Early morning, still thin
-    6: 1.20,
+    0: 1.05,   # 0-2am: Late night, thinning
+    1: 1.05,
+    2: 1.10,   # 2-5am: Thinnest books — more scanning, NOT bigger bets
+    3: 1.10,
+    4: 1.10,
+    5: 1.05,   # 5-7am: Early morning, still thin
+    6: 1.05,
     7: 1.05,   # 7-9am: Waking up
     8: 1.05,
-    9: 0.90,   # 9am-12pm: Peak activity
-    10: 0.90,
-    11: 0.90,
+    9: 0.95,   # 9am-12pm: Peak activity
+    10: 0.95,
+    11: 0.95,
     12: 0.95,  # 12-2pm: Lunch dip
     13: 0.95,
     14: 0.90,  # 2-4pm: Afternoon peak
@@ -98,10 +98,26 @@ class LiquidityTimer:
             hour_et = (utc_now.hour - 4) % 24
         return hour_et
 
-    def get_current_multiplier(self) -> float:
-        """Get aggression multiplier for right now."""
+    def get_current_multiplier(self, actual_spread: Optional[float] = None) -> float:
+        """
+        Get execution size multiplier for right now.
+
+        If actual_spread > 2x estimated_spread (spread blowout), cap at 1.0 regardless of time.
+        This prevents aggressive sizing when liquidity suddenly dries up.
+        """
         hour = self._get_et_hour()
         mult = AGGRESSION_MULTIPLIERS[hour]
+
+        # Spread-conditional logic: if spreads blow out, don't increase aggression
+        if actual_spread is not None:
+            estimated_spread = SPREAD_ESTIMATES[hour]
+            if actual_spread > 2.0 * estimated_spread:
+                logger.warning(
+                    f"Spread blowout detected (actual {actual_spread:.2f} > 2x estimate {estimated_spread:.2f}). "
+                    f"Capping multiplier at 1.0"
+                )
+                mult = 1.0
+
         logger.debug(f"Multiplier for ET hour {hour}: {mult}")
         return mult
 
@@ -112,8 +128,33 @@ class LiquidityTimer:
         logger.debug(f"Spread estimate for ET hour {hour}: {spread} cents")
         return spread
 
-    def should_widen_limit(self, hour_et: Optional[int] = None) -> bool:
-        """Place limit orders further from mid in thin markets."""
+    def get_scan_priority_mult(self, hour_et: Optional[int] = None) -> float:
+        """
+        Separate multiplier for market scanning breadth (how many markets to evaluate).
+        During thin books, increase scan frequency. Can go up to 1.3.
+        This is independent from execution size multiplier.
+        """
+        hour = self._get_et_hour(hour_et)
+        mult = AGGRESSION_MULTIPLIERS[hour]
+
+        # Map execution multiplier to scan priority (more aggressive on scanning)
+        if mult > 1.10:
+            scan_mult = 1.30  # Thin books: scan much wider
+        elif mult > 1.05:
+            scan_mult = 1.20  # Moderate thin: wider scan
+        elif mult > 0.95:
+            scan_mult = 1.10  # Normal: slightly wider scan
+        else:
+            scan_mult = 1.00  # Peak hours: normal scan
+
+        logger.debug(f"Scan priority mult for ET hour {hour}: {scan_mult}")
+        return scan_mult
+
+    def should_use_limit_only(self, hour_et: Optional[int] = None) -> bool:
+        """
+        During thin-book hours, always use limit orders, never market orders.
+        Prevents picking off during thin liquidity.
+        """
         mult = self.get_current_multiplier()
         return mult > THIN_MARKET_THRESHOLD
 
@@ -131,12 +172,12 @@ class LiquidityTimer:
         spread = self.get_spread_estimate(hour)
         is_thin = mult > THIN_MARKET_THRESHOLD
 
-        if mult > 1.20:
-            rec = "AGGRESSIVE: Thin books, use market orders"
+        if mult > 1.10:
+            rec = "SCAN: wider scan, limit orders only"
         elif mult > 1.00:
-            rec = "NORMAL: Balanced aggression"
+            rec = "NORMAL: Balanced scan and sizing"
         else:
-            rec = "DEFENSIVE: Peak hours, use limit orders"
+            rec = "DEFENSIVE: Peak hours, conservative limits"
 
         advice = ExecutionAdvice(
             current_multiplier=mult,
@@ -147,7 +188,7 @@ class LiquidityTimer:
         )
 
         if self.shared_state:
-            self.shared_state.publish("execution_advice", advice)
+            self.shared_state.publish("liquidity_timer", "execution_advice", advice)
 
         logger.info(f"Advice: {advice.recommendation} (mult={mult:.2f})")
         return advice

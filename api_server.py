@@ -1727,38 +1727,63 @@ def _run_auto_trade_cycle():
             except Exception as _mi_err:
                 logger.debug("METAR Intel enrich failed: %s", _mi_err)
 
-        # ── Agent 18: Cross-City Correlation — propagate obs surprises ──
-        _cross_city_trades = []
+        # ── Agent 18: Cross-City Correlation — ranking boosts + gate tightening ──
+        # Cross-city produces FEATURES (boosts/gates), NOT trades.
+        # Boosts feed into signal scoring; gates raise min_ev for inconsistent signals.
+        _cross_city_boosts = []
         if HAS_CROSS_CITY and _cross_city:
             try:
                 _cross_city.reset_cycle()
-                # Gather live obs from obs_confirm or sentinel
                 _live_obs_dict = {}
                 if HAS_OBS_CONFIRM and _obs_confirm:
                     _live_obs_dict = _obs_confirm.get_live_obs()
-                _cross_city_trades = _cross_city.check_and_trade(
-                    all_signals=sigs,
-                    live_obs_dict=_live_obs_dict,
-                )
-                if _cross_city_trades:
-                    logger.info("CROSS_CITY: %d trades from neighbor correlation", len(_cross_city_trades))
+                # Propagate observations to neighbors
+                for _cc_city, _cc_temp in _live_obs_dict.items():
+                    _cc_fcst = None
+                    for _s in sigs:
+                        if _s.get('city', '').lower() == _cc_city.lower():
+                            _cc_fcst = _s.get('ftemp_f') or _s.get('forecast_temp_f')
+                            break
+                    if _cc_fcst is not None:
+                        _cross_city.propagate_observation(_cc_city, _cc_temp, _cc_fcst)
+                # Get boosts and gates (features, not trades)
+                _cross_city_boosts = _cross_city.get_boosts_and_gates(sigs, _live_obs_dict)
+                # Apply gates: raise min_ev for inconsistent signals
+                _cc_gate_map = {b.get('city', '').lower(): b for b in _cross_city_boosts if b.get('min_ev_gate', 0) > 0}
+                for sig in sigs:
+                    _cc_gate = _cc_gate_map.get(sig.get('city', '').lower())
+                    if _cc_gate:
+                        sig['cross_city_min_ev'] = _cc_gate['min_ev_gate']
+                        sig['cross_city_adjustment_f'] = _cc_gate.get('adjustment_f', 0)
+                if _cross_city_boosts:
+                    logger.info("CROSS_CITY: %d boosts/gates from neighbor correlation", len(_cross_city_boosts))
             except Exception as _cc_err:
                 logger.debug("Cross-City correlation failed: %s", _cc_err)
 
-        # ── Agent 19: Dutch Book — multi-bin arbitrage scanner ──
-        _dutch_book_trades = []
+        # ── Agent 19: Distribution Inconsistency Detector (was Dutch Book) ──
+        # Produces SIGNALS about book imbalances, NOT direct trades.
+        # Only flags executable opportunities after fee-aware calculation.
+        _book_imbalances = []
         if HAS_DUTCH_BOOK and _dutch_book:
             try:
                 _raw_markets = _state.get("markets_cache", [])
-                _db_arbs = _dutch_book.scan(_raw_markets)
-                # Convert DutchBookArb objects to trade dicts
-                for _arb in _db_arbs:
-                    for _t in getattr(_arb, 'trades', []):
-                        _dutch_book_trades.append(_t)
-                if _dutch_book_trades:
-                    logger.info("DUTCH_BOOK: %d arbitrage trades from book imbalance", len(_dutch_book_trades))
+                _book_imbalances = _dutch_book.scan(_raw_markets)
+                # Log executable imbalances for the aggregator
+                _executable = [b for b in _book_imbalances if getattr(b, 'executable', False)]
+                if _executable:
+                    logger.info("DIST_INCONSISTENCY: %d executable book imbalances detected (of %d total)",
+                                len(_executable), len(_book_imbalances))
+                # Tag signals with book imbalance info
+                for _bi in _book_imbalances:
+                    _bi_city = getattr(_bi, 'city', '').lower()
+                    for sig in sigs:
+                        if sig.get('city', '').lower() == _bi_city:
+                            sig['book_imbalance_pct'] = getattr(_bi, 'imbalance_pct', 0)
+                            sig['book_direction'] = getattr(_bi, 'direction', '')
+                            sig['book_executable'] = getattr(_bi, 'executable', False)
+                            sig['book_net_edge'] = getattr(_bi, 'net_edge_after_fees', 0)
             except Exception as _db_err:
-                logger.debug("Dutch Book scan failed: %s", _db_err)
+                logger.debug("Distribution Inconsistency scan failed: %s", _db_err)
 
         # ── Agent 20: Last Mile — boost size when outcome is locked in ──
         _last_mile_adjustments = []
@@ -1822,8 +1847,10 @@ def _run_auto_trade_cycle():
                 pass
 
         # Filter for tradeable signals
-        tradeable = [s for s in sigs 
-                     if s.get("theo_ev", 0) >= cfg["min_ev"]
+        # AGGREGATOR RULE: agents emit features, only this filter + coordinator decides.
+        # Cross-city gates raise min_ev for inconsistent signals.
+        tradeable = [s for s in sigs
+                     if s.get("theo_ev", 0) >= max(cfg["min_ev"], s.get("cross_city_min_ev", 0))
                      and s.get("kelly", 0) >= cfg["min_kelly"]
                      and s.get("signal") in ("BUY YES", "BUY NO")
                      and s.get("tokens")
@@ -2153,9 +2180,11 @@ def _run_auto_trade_cycle():
             except Exception as _yh_err:
                 logger.error("RUFLO_YES_HARVEST scan error: %s", _yh_err)
 
-        # ── Execute all agent trades: Sniper + GFS + ObsConfirm + CrossCity + DutchBook + Hedge ──
+        # ── Execute agent trades: Sniper + GFS + ObsConfirm + Hedge ──
+        # NOTE: Cross-City and Dutch Book are now FEATURE producers, not trade generators.
+        # They tag signals with features; the aggregator (coordinator) decides.
         _combined_agent_trades = (_snipe_trades + _gfs_delta_trades + _obs_confirm_trades
-                                  + _cross_city_trades + _dutch_book_trades + _hedge_trades)
+                                  + _hedge_trades)
         if _combined_agent_trades:
             _agent_traded = 0
             for _at in _combined_agent_trades:
@@ -2226,10 +2255,9 @@ def _run_auto_trade_cycle():
                 _agent_traded += 1
                 traded += 1
             if _agent_traded:
-                logger.info("ALL_AGENTS: executed %d agent trades this cycle (snipe=%d gfs=%d obs=%d xcity=%d dutch=%d hedge=%d)",
+                logger.info("ALL_AGENTS: executed %d agent trades this cycle (snipe=%d gfs=%d obs=%d hedge=%d)",
                             _agent_traded, len(_snipe_trades), len(_gfs_delta_trades),
-                            len(_obs_confirm_trades), len(_cross_city_trades),
-                            len(_dutch_book_trades), len(_hedge_trades))
+                            len(_obs_confirm_trades), len(_hedge_trades))
 
         #ÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂ Agent 11 & 12: Exit Strategy (ProfitTaker + RiskCutter) ÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂ
         if RUFLO_AVAILABLE and _paper_trades:

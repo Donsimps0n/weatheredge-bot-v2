@@ -64,7 +64,7 @@ class METARIntel:
             clouds: List of cloud layers with 'cover' (FEW/SCT/BKN/OVC) and 'base'
 
         Returns:
-            Temperature adjustment in °F (positive = boost, negative = reduce)
+            Temperature adjustment in °F (positive = boost, negative = reduce), capped at ±1.5°F
         """
         if not clouds:
             return 0.0
@@ -74,11 +74,11 @@ class METARIntel:
         cover = lowest.get("cover", "").upper()
 
         if cover in ("FEW", "SCT"):
-            return 1.5  # Strong solar heating
+            return 1.0  # Strong solar heating (capped at 1.0°F)
         elif cover == "BKN":
             return 0.0  # Moderate, neutral
         elif cover == "OVC":
-            return -2.5  # Overcast suppresses heating
+            return -1.5  # Overcast suppresses heating (capped at -1.5°F)
         return 0.0
 
     def _analyze_wind(self, wdir: Optional[int], wspd: Optional[int]) -> float:
@@ -89,19 +89,19 @@ class METARIntel:
             wspd: Wind speed in knots
 
         Returns:
-            Temperature adjustment in °F
+            Temperature adjustment in °F, capped at ±1.5°F
         """
         if wdir is None or wspd is None or wspd == 0:
             return 0.0
 
         # Warm advection: South/SW (150-240°)
         if 150 <= wdir <= 240:
-            base_adj = min(3.0, wspd / 15.0 * 3.0)  # Max 3°F, scales with speed
+            base_adj = min(1.5, wspd / 15.0 * 1.5)  # Max 1.5°F, scales with speed
             return base_adj
 
         # Cold advection: North/NE (330-60°)
         if wdir >= 330 or wdir <= 60:
-            base_adj = min(3.0, wspd / 15.0 * 3.0)
+            base_adj = min(1.5, wspd / 15.0 * 1.5)
             return -base_adj
 
         return 0.0
@@ -114,7 +114,7 @@ class METARIntel:
             dewp: Dewpoint in °F
 
         Returns:
-            Temperature adjustment in °F (for overnight low)
+            Temperature adjustment in °F (for overnight low), capped at ±1.5°F
         """
         if temp is None or dewp is None:
             return 0.0
@@ -123,15 +123,15 @@ class METARIntel:
 
         # High dewpoint limits overnight cooling
         if dewp > 65:
-            return 2.0  # Boost overnight low probability
+            return 1.5  # Boost overnight low probability (capped at 1.5°F)
 
         # Low dewpoint allows deep radiational cooling
         if dewp < 40:
-            return -2.0  # Reduce overnight low probability
+            return -1.5  # Reduce overnight low probability (capped at -1.5°F)
 
         # Fog/cloud risk when depression < 5°F
         if dewpoint_depression < 5:
-            return -1.0  # Slight reduction
+            return -0.5  # Slight reduction (capped at -0.5°F)
 
         return 0.0
 
@@ -175,14 +175,17 @@ class METARIntel:
             return None
 
     def enrich_signals(self, signals: List[Dict[str, Any]], sentinel=None) -> List[Dict[str, Any]]:
-        """Enrich signals with METAR-based probability adjustments.
+        """Enrich signals with bounded METAR-based feature adjustments for the aggregator.
+
+        Produces mean shift adjustments and sigma inflation fields without directly
+        modifying probability. The aggregator decides final probability treatment.
 
         Args:
             signals: List of signal dicts with 'city', 'signal_type', 'our_prob'
             sentinel: Optional sentinel value (unused, for API compatibility)
 
         Returns:
-            Enriched signals with metar_*_adj_f and metar_total_adj_f fields
+            Enriched signals with metar_*_adj_f, metar_total_adj_f, and metar_sigma_inflation fields
         """
         enriched = []
 
@@ -211,12 +214,27 @@ class METARIntel:
 
                 total_adj = wind_adj + cloud_adj + dewpoint_adj
 
-                # Enrich signal
+                # Cap total adjustment to ±1.5°F
+                total_adj = max(-1.5, min(1.5, total_adj))
+
+                # Calculate sigma inflation: larger adjustments increase uncertainty
+                metar_sigma_inflation = 0.1 * abs(total_adj)
+
+                # Enrich signal with feature fields (not modifying our_prob)
                 enriched_signal = signal.copy()
                 enriched_signal["metar_wind_adj_f"] = round(wind_adj, 2)
                 enriched_signal["metar_cloud_adj_f"] = round(cloud_adj, 2)
                 enriched_signal["metar_dewpoint_adj_f"] = round(dewpoint_adj, 2)
                 enriched_signal["metar_total_adj_f"] = round(total_adj, 2)
+                enriched_signal["metar_sigma_inflation"] = round(metar_sigma_inflation, 3)
+
+                # Log enrichment with exact features and applied adjustment
+                logger.info(
+                    f"METAR enrichment for {city} ({icao}): "
+                    f"wind_adj={wind_adj:.2f}°F, cloud_adj={cloud_adj:.2f}°F, "
+                    f"dewpoint_adj={dewpoint_adj:.2f}°F, total_adj={total_adj:.2f}°F, "
+                    f"sigma_inflation={metar_sigma_inflation:.3f}"
+                )
 
                 # Update summary
                 if city not in self._enrichments:
@@ -227,6 +245,7 @@ class METARIntel:
                     "cloud_adj": cloud_adj,
                     "dewpoint_adj": dewpoint_adj,
                     "total_adj": total_adj,
+                    "sigma_inflation": metar_sigma_inflation,
                     "timestamp": time.time()
                 }
 

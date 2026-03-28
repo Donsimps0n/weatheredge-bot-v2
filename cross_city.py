@@ -3,11 +3,14 @@ Cross-City Geographic Correlation Engine for Weather Trading
 
 When one city's METAR observation surprises (e.g., Atlanta 4°F warmer than forecast),
 nearby cities sharing the same air mass are likely also warmer. This module uses
-confirmed observations to adjust probabilities for correlated neighbors BEFORE they
-report their own observations.
+confirmed observations to compute ranking boosts and gate adjustments for correlated
+neighbors BEFORE they report their own observations.
 
 Correlation strength: distance-based + country bonus + coastal match bonus.
-Trade generation: If correlation adjustment shifts probability by >5%, generate trade.
+Boost generation: Returns ranking boosts + gate tighteners, NOT probability rewrites.
+Gate adjustment: When signal is inconsistent with cross-city evidence, raise EV gate to 8%+.
+Correlation floor: Only propagate if computed correlation >= 0.40 (was 0.225).
+Adjustment cap: Capped to ±2.0°F regardless of neighbor pile-up.
 """
 
 import math
@@ -81,16 +84,17 @@ class CrossCityCorrelationEngine:
         Rules:
         - <200km: 0.7-0.8 (strong)
         - 200-500km: 0.4-0.6 (moderate)
-        - 500-1000km: 0.15-0.3 (weak)
+        - 500-1000km: 0.25-0.35 (weak, raised from 0.15-0.3)
         - >1000km: 0 (none)
         - Same country: +0.1
         - Both coastal or both inland: +0.05
+        - GATE: Only propagate if final corr >= 0.40 (correlation floor)
 
         Args:
             city_a, city_b: City names.
 
         Returns:
-            Correlation coefficient [0, 1].
+            Correlation coefficient [0, 1]. Returns 0 if < 0.40 (floor).
         """
         if city_a not in self.city_map or city_b not in self.city_map:
             return 0.0
@@ -100,13 +104,13 @@ class CrossCityCorrelationEngine:
 
         dist_km = self.haversine_km(ca["lat"], ca["lon"], cb["lat"], cb["lon"])
 
-        # Distance-based correlation
+        # Distance-based correlation (raised minimum from 0.225 to 0.30)
         if dist_km < 200:
             corr = 0.75
         elif dist_km < 500:
             corr = 0.50
         elif dist_km < 1000:
-            corr = 0.225
+            corr = 0.30  # Raised from 0.225
         else:
             corr = 0.0
 
@@ -121,7 +125,13 @@ class CrossCityCorrelationEngine:
         if ca["coastal"] == cb["coastal"]:
             corr += 0.05
 
-        return min(corr, 1.0)
+        corr = min(corr, 1.0)
+
+        # Correlation floor: only propagate if >= 0.40
+        if corr < 0.40:
+            return 0.0
+
+        return corr
 
     # =========================================================================
     # OBSERVATION PROPAGATION
@@ -184,12 +194,16 @@ class CrossCityCorrelationEngine:
             if neighbor not in self.accumulated_adjustments:
                 self.accumulated_adjustments[neighbor] = 0.0
 
+            # Cap adjustment to ±2.0°F regardless of neighbor pile-up
+            max_adjustment = 2.0
+            adjustment_f = max(-max_adjustment, min(max_adjustment, adjustment_f))
+
             self.accumulated_adjustments[neighbor] += adjustment_f
 
             if adjustment_f != 0:
                 logger.debug(
                     f"  → {neighbor}: corr={corr:.2f}, decay={decay:.2f}, "
-                    f"adjustment={adjustment_f:+.2f}°F"
+                    f"adjustment={adjustment_f:+.2f}°F (capped to ±{max_adjustment}°F)"
                 )
 
         if self.shared_state:
@@ -216,26 +230,34 @@ class CrossCityCorrelationEngine:
         return self.accumulated_adjustments.get(target_city, 0.0)
 
     # =========================================================================
-    # TRADE GENERATION
+    # BOOST & GATE GENERATION
     # =========================================================================
 
-    def check_and_trade(
+    def get_boosts_and_gates(
         self, all_signals: List[Dict], live_obs_dict: Dict[str, float]
     ) -> List[Dict]:
         """
-        Main entry point. For each signal, check if correlation creates tradeable edge.
+        Main entry point. Compute ranking boosts + gate adjustments from cross-city signals.
 
-        Edge threshold: >5% shift in probability vs market_price.
+        This is a RANKING BOOST + GATE TIGHTENER, NOT a probability rewriter.
+        - Boosts rank cities higher in priority for collection
+        - Gates tighten EV thresholds when cross-city signal is inconsistent
+
+        Returns:
+            List of boost dicts:
+            {
+              city: str,
+              adjustment_f: float (capped ±2.0°F),
+              boost_reason: str,
+              min_ev_gate: float (8.0 if inconsistent signal, else None)
+            }
 
         Args:
             all_signals: List of signal dicts:
-              {city, market_price, our_prob, fcst_temp_f, ...}
+              {city, market_price, our_prob, fcst_temp_f, signal_direction, ...}
             live_obs_dict: {city: temp_f} live observations.
-
-        Returns:
-            List of trade dicts with >5% edge, or empty list.
         """
-        trades = []
+        boosts = []
 
         for signal in all_signals:
             city = signal.get("city")
@@ -250,52 +272,71 @@ class CrossCityCorrelationEngine:
             if abs(adjustment_f) < 0.1:
                 continue
 
-            # Estimate probability shift from adjustment
-            # Simple heuristic: ~0.5°F shifts probability by 1-2% depending on regime
-            # Use 2% per °F as baseline
-            prob_shift = abs(adjustment_f) * 0.02
+            boost_reason = f"cross_city_correlation: {adjustment_f:+.2f}°F adjustment"
 
-            market_price = signal.get("market_price", 0.5)
-            our_prob = signal.get("our_prob", 0.5)
+            # Check for signal inconsistency: if cross-city is opposite to signal intent
+            # e.g., signal says "cold" (SELL) but neighbors warming (positive adjustment)
+            signal_direction = signal.get("signal_direction")  # "WARM" or "COLD"
+            min_ev_gate = None
 
-            # Check if adjustment creates >5% edge
-            if prob_shift > 0.05:
-                direction = "BUY" if adjustment_f > 0 else "SELL"
-                implied_prob = our_prob + (prob_shift if adjustment_f > 0 else -prob_shift)
-                edge_pct = abs(implied_prob - market_price) * 100
+            if signal_direction:
+                is_warming = adjustment_f > 0
+                is_cold_signal = signal_direction == "COLD"
+                is_warm_signal = signal_direction == "WARM"
 
-                trade = {
-                    "city": city,
-                    "direction": direction,
-                    "reason": f"cross_city_correlation",
-                    "correlated_adjustment_f": adjustment_f,
-                    "prob_shift_pct": prob_shift * 100,
-                    "implied_prob": implied_prob,
-                    "market_price": market_price,
-                    "edge_pct": edge_pct,
-                }
+                # Inconsistency: neighbors warm but we're betting on cold
+                if is_warming and is_cold_signal:
+                    min_ev_gate = 8.0
+                    boost_reason += " [GATE: inconsistent signal, raising EV gate to 8%+]"
+                # Inconsistency: neighbors cold but we're betting on warm
+                elif not is_warming and is_warm_signal:
+                    min_ev_gate = 8.0
+                    boost_reason += " [GATE: inconsistent signal, raising EV gate to 8%+]"
 
-                trades.append(trade)
-                logger.info(
-                    f"Trade signal for {city} ({direction}): "
-                    f"adjustment={adjustment_f:+.2f}°F, "
-                    f"edge={edge_pct:.1f}%"
+            boost = {
+                "city": city,
+                "adjustment_f": adjustment_f,
+                "boost_reason": boost_reason,
+                "min_ev_gate": min_ev_gate,
+            }
+
+            boosts.append(boost)
+            logger.info(f"Boost for {city}: {boost_reason}")
+
+            if self.shared_state:
+                self.shared_state.publish(
+                    "cross_city",
+                    f"boost_{city}",
+                    boost,
+                )
+                self.shared_state.boost_city_priority(
+                    "cross_city",
+                    city,
+                    abs(adjustment_f) / 2.0,  # Use adjustment magnitude for priority
+                    f"Cross-city correlation: {adjustment_f:+.2f}°F",
                 )
 
-                if self.shared_state:
-                    self.shared_state.publish(
-                        "cross_city",
-                        f"trade_{city}",
-                        trade,
-                    )
-                    self.shared_state.boost_city_priority(
-                        "cross_city",
-                        city,
-                        prob_shift,
-                        f"Cross-city correlation from {city} neighbors",
-                    )
+        return boosts
 
-        return trades
+    def check_and_trade(
+        self, all_signals: List[Dict], live_obs_dict: Dict[str, float]
+    ) -> List[Dict]:
+        """
+        DEPRECATED: Backward-compatibility wrapper for get_boosts_and_gates.
+
+        Returns empty list. New code should call get_boosts_and_gates directly.
+
+        Args:
+            all_signals: Ignored (for API compatibility).
+            live_obs_dict: Ignored (for API compatibility).
+
+        Returns:
+            Empty list (deprecated).
+        """
+        logger.warning(
+            "check_and_trade() is deprecated. Use get_boosts_and_gates() instead."
+        )
+        return []
 
     # =========================================================================
     # CYCLE MANAGEMENT
@@ -316,10 +357,11 @@ class CrossCityCorrelationEngine:
 
     def get_stats(self) -> Dict:
         """
-        Return engine statistics for API.
+        Return engine statistics for API (new format: ranking boosts + gates).
 
         Returns:
-            Dict with stats: cities_with_adjustments, avg_adjustment, etc.
+            Dict with stats: cities_with_adjustments, avg_adjustment, max_adjustment,
+            correlation_floor_applied, adjustment_cap_applied.
         """
         if not self.accumulated_adjustments:
             return {
@@ -327,6 +369,8 @@ class CrossCityCorrelationEngine:
                 "propagated_observations_count": 0,
                 "avg_adjustment_f": 0.0,
                 "max_adjustment_f": 0.0,
+                "correlation_floor": 0.40,
+                "adjustment_cap_f": 2.0,
             }
 
         adjustments = list(self.accumulated_adjustments.values())
@@ -336,4 +380,7 @@ class CrossCityCorrelationEngine:
             "avg_adjustment_f": sum(adjustments) / len(adjustments),
             "max_adjustment_f": max(abs(a) for a in adjustments),
             "adjustments_by_city": self.accumulated_adjustments,
+            "correlation_floor": 0.40,
+            "adjustment_cap_f": 2.0,
+            "output_format": "ranking_boosts_and_gates",
         }

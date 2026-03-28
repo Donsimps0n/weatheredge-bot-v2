@@ -64,15 +64,22 @@ class LastMileAgent:
     - Historical path reachability (can the low actually be reached?)
     """
 
-    def __init__(self, cities_config: List[Dict]):
+    def __init__(self, shared_state=None):
         """
         Initialize the agent.
 
         Args:
-            cities_config: List of city dicts from config.CITIES,
-                          each with 'city', 'timezone' fields.
+            shared_state: Optional shared state object for integration with api_server.
         """
-        self.cities = {c['city']: c for c in cities_config}
+        self.shared_state = shared_state
+
+        # Import CITIES from config
+        try:
+            from config import CITIES
+            self.cities = {c['city']: c for c in CITIES}
+        except ImportError:
+            self.cities = {}
+
         self.stats = {
             'total_adjustments': 0,
             'avg_multiplier': 0.0,
@@ -107,10 +114,11 @@ class LastMileAgent:
         obs_temp_f: Optional[float],
         bin_lo_f: float,
         bin_hi_f: float,
+        obs_age_minutes: Optional[int] = None,
     ) -> Tuple[str, float, str]:
         """
         Get confidence level and sizing multiplier based on time-of-day and
-        observation confirmation.
+        observation confirmation with staleness and uncertainty gates.
 
         Args:
             local_hour: Current local hour (0-24, float).
@@ -118,6 +126,7 @@ class LastMileAgent:
             obs_temp_f: Current observed temperature (F), or None if not available.
             bin_lo_f: Lower bound of the target bin (F).
             bin_hi_f: Upper bound of the target bin (F).
+            obs_age_minutes: Age of observation in minutes, or None if unknown.
 
         Returns:
             (confidence: str, multiplier: float, reason: str)
@@ -128,52 +137,70 @@ class LastMileAgent:
 
         if is_high_market:
             # HIGH market: uncertainty decreases as we approach/pass 2-4pm peak
+            # Capped multipliers based on time window
             if local_hour < 10:
                 confidence = 'HIGH'
-                multiplier = 1.0
+                base_multiplier = 1.0
                 reason = "Morning: uncertainty still HIGH before peak window"
             elif local_hour < 13:
                 confidence = 'MODERATE'
-                multiplier = 1.2
+                base_multiplier = 1.1
                 reason = "Late morning: approaching peak, uncertainty MODERATE"
             elif local_hour < 15:
                 confidence = 'LOW'
-                multiplier = 1.5
+                base_multiplier = 1.2
                 reason = "Early afternoon: near peak window, uncertainty LOW"
             elif local_hour < 17:
                 confidence = 'VERY_LOW'
-                multiplier = 2.0
+                base_multiplier = 1.5
                 reason = "Late afternoon: peak likely passed, uncertainty VERY_LOW"
             else:
                 confidence = 'MINIMAL'
-                multiplier = 2.5
+                base_multiplier = 1.8
                 reason = "Evening: high locked in, uncertainty MINIMAL"
+
+            multiplier = base_multiplier
         else:
             # LOW market: uncertainty decreases as we approach/pass 5-7am low
+            # Capped multipliers based on time window
             if local_hour < 2:
                 confidence = 'HIGH'
-                multiplier = 1.0
+                base_multiplier = 1.0
                 reason = "Early night: uncertainty HIGH, low still hours away"
             elif local_hour < 5:
                 confidence = 'LOW'
-                multiplier = 1.5
+                base_multiplier = 1.2
                 reason = "Late night: low approaching, uncertainty LOW"
             elif local_hour < 8:
                 confidence = 'VERY_LOW'
-                multiplier = 2.0
+                base_multiplier = 1.5
                 reason = "Early morning: near low window, uncertainty VERY_LOW"
             else:
                 confidence = 'MINIMAL'
-                multiplier = 2.5
+                base_multiplier = 1.8
                 reason = "Morning+: low locked in, uncertainty MINIMAL"
+
+            multiplier = base_multiplier
+
+        # Staleness kill: if observation is stale (>60 min), cap multiplier at 1.0
+        if obs_age_minutes is not None and obs_age_minutes > 60:
+            multiplier = 1.0
+            reason += " [OBS STALE >60min: multiplier capped at 1.0]"
+            return confidence, multiplier, reason
 
         # Observation confirmation boost: if obs is inside bin post-peak
         if obs_temp_f is not None and bin_lo_f <= obs_temp_f <= bin_hi_f:
             # We're in the target bin NOW
             if (is_high_market and local_hour >= 15) or (not is_high_market and local_hour >= 5):
                 # Post-peak and obs confirms the bin
-                multiplier = min(multiplier + 1.0, 4.0)
-                reason += " + OBSERVATION IN BIN POST-PEAK (max 4.0x)"
+                # Only allow boost to 2.5x if BOTH: obs is fresh (<30 min) AND our_prob >= 0.95
+                # For now, conservatively apply +0.3 boost, capped at 2.0x
+                obs_is_fresh = obs_age_minutes is None or obs_age_minutes < 30
+                if obs_is_fresh:
+                    multiplier = min(multiplier + 0.3, 2.0)
+                    reason += " + OBSERVATION IN BIN POST-PEAK (fresh, +0.3, max 2.0x)"
+                else:
+                    reason += " + OBSERVATION IN BIN POST-PEAK (stale, no boost)"
         elif obs_temp_f is not None and (
             (is_high_market and obs_temp_f > bin_hi_f) or
             (not is_high_market and obs_temp_f < bin_lo_f)
@@ -182,6 +209,22 @@ class LastMileAgent:
             if (is_high_market and local_hour >= 15) or (not is_high_market and local_hour >= 5):
                 reason = "EXIT: observation rules out bin post-peak"
                 return confidence, 0.0, reason
+
+        # Uncertainty gate: multiplier cannot exceed 1.0 + our_prob
+        # For now, we estimate our_prob from confidence level (conservative)
+        confidence_to_prob = {
+            'MINIMAL': 0.95,
+            'VERY_LOW': 0.80,
+            'LOW': 0.65,
+            'MODERATE': 0.50,
+            'HIGH': 0.35,
+        }
+        our_prob = confidence_to_prob.get(confidence, 0.5)
+        max_multiplier_by_uncertainty = 1.0 + our_prob
+        if multiplier > max_multiplier_by_uncertainty:
+            old_mult = multiplier
+            multiplier = max_multiplier_by_uncertainty
+            reason += f" [UNCERTAINTY GATE: {old_mult:.2f}x → {multiplier:.2f}x (prob={our_prob:.2f})]"
 
         return confidence, multiplier, reason
 
@@ -251,9 +294,9 @@ class LastMileAgent:
             # Get current observation (if available)
             obs_temp = live_obs.get(city)
 
-            # Compute confidence and multiplier
+            # Compute confidence and multiplier (obs_age_minutes unknown for now, use conservative default)
             confidence, multiplier, reason = self.get_confidence_level(
-                local_hour, is_high, obs_temp, bin_lo, bin_hi
+                local_hour, is_high, obs_temp, bin_lo, bin_hi, obs_age_minutes=None
             )
 
             # If multiplier is 0.0, it's an exit recommendation (skip sizing boost)
@@ -312,25 +355,3 @@ class LastMileAgent:
             'avg_multiplier': round(self.stats['avg_multiplier'], 3),
             'exit_recommendations': self.stats['exit_recommendations'],
         }
-
-
-# ============================================================================
-# MODULE-LEVEL FACTORY (for shared state integration)
-# ============================================================================
-
-_agent_instance: Optional[LastMileAgent] = None
-
-
-def initialize_agent(cities_config: List[Dict]) -> LastMileAgent:
-    """Factory to initialize or return the singleton agent."""
-    global _agent_instance
-    if _agent_instance is None:
-        _agent_instance = LastMileAgent(cities_config)
-    return _agent_instance
-
-
-def get_agent() -> LastMileAgent:
-    """Get the current agent instance."""
-    if _agent_instance is None:
-        raise RuntimeError("LastMileAgent not initialized. Call initialize_agent() first.")
-    return _agent_instance

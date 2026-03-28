@@ -42,12 +42,6 @@ class HedgeManager:
             'last_run_ts': 0,
             'hedge_trades': [],
         }
-
-        if shared_state:
-            shared_state.register_agent(
-                'hedge_manager',
-                'Reduces variance by hedging positions near bin boundaries'
-            )
         log.info("HEDGE_MANAGER: initialized")
 
     def generate_hedge_trades(
@@ -94,6 +88,15 @@ class HedgeManager:
                 log.debug("HEDGE_MANAGER: %s already hedged, skipping", token_id)
                 continue
 
+            # Don't hedge near-certain positions (>= 85% probability)
+            primary_prob = bp.get('model_probability', 0.5)
+            if primary_prob >= 0.85:
+                log.debug(
+                    "HEDGE_MANAGER: primary position too likely (%.1f%%), skipping hedge for %s",
+                    primary_prob * 100, token_id
+                )
+                continue
+
             # Find adjacent bin market
             adjacent = self.find_adjacent_bin(
                 all_signals,
@@ -106,12 +109,22 @@ class HedgeManager:
                 log.debug("HEDGE_MANAGER: no adjacent bin found for %s", token_id)
                 continue
 
+            # Check if hedge bin is also mispriced (YES < model probability)
+            hedge_price = adjacent.get('current_price', 0.5)
+            hedge_model_prob = adjacent.get('model_probability', 0.5)
+            if hedge_price >= hedge_model_prob:
+                log.debug(
+                    "HEDGE_MANAGER: hedge bin fairly priced (%.2f >= %.2f), skipping for %s",
+                    hedge_price, hedge_model_prob, token_id
+                )
+                continue
+
             # Calculate hedge size
             hedge_size = self.calculate_hedge_size(
                 primary_position_size=bp['size'],
                 boundary_distance_f=bp['boundary_distance_f'],
                 primary_price=bp.get('price', 0.5),
-                hedge_price=adjacent.get('current_price', 0.5),
+                hedge_price=hedge_price,
             )
 
             if hedge_size <= 0:
@@ -126,7 +139,7 @@ class HedgeManager:
                 'signal': 'HEDGE',
                 'city': city,
                 'token_id': adjacent['token_id'],
-                'price': adjacent.get('current_price', 0.5),
+                'price': hedge_price,
                 'size': hedge_size,
                 'source': 'hedge_manager',
                 'primary_token_id': token_id,
@@ -299,12 +312,13 @@ class HedgeManager:
         """Calculate optimal hedge size based on distance from boundary.
 
         Scale increases as we get closer:
-        - >2.5°F away: 15%
-        - 1.5-2.5°F: 25%
-        - 0.5-1.5°F: 40%
-        - <0.5°F: 50%
+        - >2.5°F away: 10%
+        - 1.5-2.5°F: 15%
+        - 0.5-1.5°F: 25%
+        - <0.5°F: 30%
 
-        Also reject hedges if hedge_price >= 0.40 (too expensive).
+        Also reject hedges if hedge_price + round-trip fees > 0.25 (too expensive).
+        Estimated round-trip fees: 0.04 (4 cents)
 
         Args:
             primary_position_size: Size of primary YES position
@@ -315,23 +329,27 @@ class HedgeManager:
         Returns:
             Hedge size in contracts (rounded down)
         """
-        # Don't hedge expensive hedges
-        if hedge_price >= 0.40:
+        # Don't hedge expensive hedges (price + estimated round-trip fees)
+        round_trip_fees = 0.04
+        total_cost = hedge_price + round_trip_fees
+        max_hedge_cost = 0.25
+
+        if total_cost > max_hedge_cost:
             log.debug(
-                "HEDGE_MANAGER: rejecting hedge at %.2f (too expensive)",
-                hedge_price
+                "HEDGE_MANAGER: rejecting hedge at %.2f (total cost %.2f > max %.2f)",
+                hedge_price, total_cost, max_hedge_cost
             )
             return 0
 
         # Scale by distance
         if boundary_distance_f > 2.5:
-            ratio = 0.15
+            ratio = 0.10
         elif boundary_distance_f > 1.5:
-            ratio = 0.25
+            ratio = 0.15
         elif boundary_distance_f > 0.5:
-            ratio = 0.40
+            ratio = 0.25
         else:
-            ratio = 0.50
+            ratio = 0.30
 
         hedge_size = int(primary_position_size * ratio)
         return max(0, hedge_size)

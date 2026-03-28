@@ -1,10 +1,12 @@
 """
-Dutch Book Arbitrage Scanner for Polymarket Temperature Bins
+Distribution Inconsistency Detector for Polymarket Temperature Bins
 
-Detects mispricing in Polymarket temperature markets where exactly one bin resolves YES.
-When sum of YES prices ≠ 1.0, generates arbitrage trades:
-- sum > 1.0: buy NO on overpriced bins
-- sum < 1.0: buy YES on underpriced bins
+Detects distribution inconsistencies in Polymarket temperature markets where exactly one bin resolves YES.
+When sum of YES prices ≠ 1.0, generates inconsistency signals for scoring:
+- sum > 1.0: overbooked distribution (more likely to trade)
+- sum < 1.0: underbooked distribution (more likely to trade)
+
+Signals feed the scoring engine; executable only if net edge exceeds fee costs.
 """
 
 import re
@@ -17,7 +19,7 @@ from datetime import datetime
 logger = logging.getLogger(__name__)
 
 # Constants
-MIN_BOOK_EDGE = 0.03  # 3% minimum imbalance to trade
+MIN_BOOK_EDGE = 0.05  # 5% minimum imbalance before flagging
 FULL_ARB_THRESHOLD = 0.06  # 6% for full all-bins arbitrage
 POLYMARKET_FEE = 0.02  # 2% taker fee estimate
 MAX_TRADES_PER_SCAN = 8
@@ -42,15 +44,16 @@ class BinMarket:
 
 
 @dataclass
-class DutchBookArb:
-    """Represents a detected arbitrage opportunity"""
+class BookImbalance:
+    """Represents a distribution inconsistency signal (not guaranteed profit)"""
     city: str
     date: str
     book_value: float
-    edge: float
-    arbitrage_type: str  # "overbooked", "underbooked", "full"
-    trades: List[Dict[str, Any]]
-    profit_percent: float
+    imbalance_pct: float
+    direction: str  # "overbooked" or "underbooked"
+    most_mispriced_bins: List[Dict[str, Any]]
+    net_edge_after_fees: float
+    executable: bool
 
 
 class DutchBookScanner:
@@ -137,144 +140,117 @@ class DutchBookScanner:
         """Calculate sum of YES prices across all bins"""
         return sum(bin.yes_price for bin in bins)
 
-    def detect_arbitrage(self, city_date: str, bins: List[BinMarket]) -> Optional[DutchBookArb]:
-        """Detect arbitrage in a city+date bin group"""
+    def detect_arbitrage(self, city_date: str, bins: List[BinMarket]) -> Optional[BookImbalance]:
+        """Detect distribution inconsistency in a city+date bin group"""
         if len(bins) < 2:
             return None
 
         book_value = self.calculate_book_value(bins)
-        edge = abs(book_value - 1.0)
+        imbalance = abs(book_value - 1.0)
 
-        if edge < MIN_BOOK_EDGE:
+        if imbalance < MIN_BOOK_EDGE:
             return None
 
-        profit_percent = edge * 100
-
-        # Determine arbitrage type
+        # Determine direction
         if book_value > 1.0:
-            arb_type = "overbooked"
-            trades = self._generate_overbooked_trades(bins, book_value)
+            direction = "overbooked"
         else:
-            arb_type = "underbooked"
-            trades = self._generate_underbooked_trades(bins, book_value)
+            direction = "underbooked"
 
-        # Check for full arbitrage if edge is large
-        if edge >= FULL_ARB_THRESHOLD:
-            arb_type = "full"
-            trades = self._generate_full_arb_trades(bins, book_value)
+        # Calculate net edge after fees
+        # Round-trip fee per bin traded: 2 * POLYMARKET_FEE per transaction
+        num_bins_to_trade = min(3, len(bins))  # Rank top 3 mispriced bins
+        net_edge = imbalance - (num_bins_to_trade * POLYMARKET_FEE * 2)
+
+        # Only executable if net edge > 1% after all fees
+        executable = net_edge > 0.01
+
+        # Rank most mispriced bins
+        mispriced_bins = self._rank_mispriced_bins(bins, direction)
 
         city_date_parts = city_date.split('_')
         city = city_date_parts[0]
         date = '_'.join(city_date_parts[1:])
 
-        return DutchBookArb(
+        return BookImbalance(
             city=city,
             date=date,
             book_value=round(book_value, 4),
-            edge=round(edge, 4),
-            arbitrage_type=arb_type,
-            trades=trades[:MAX_TRADES_PER_SCAN],
-            profit_percent=round(profit_percent, 2)
+            imbalance_pct=round(imbalance, 4),
+            direction=direction,
+            most_mispriced_bins=mispriced_bins[:3],
+            net_edge_after_fees=round(net_edge, 4),
+            executable=executable
         )
 
-    def _generate_overbooked_trades(self, bins: List[BinMarket], book_value: float) -> List[Dict]:
-        """Buy NO on most overpriced bins when book sum > 1.0"""
-        # Sort by YES price (most overpriced first)
-        sorted_bins = sorted(bins, key=lambda b: b.yes_price, reverse=True)
-        trades = []
+    def _rank_mispriced_bins(self, bins: List[BinMarket], direction: str) -> List[Dict]:
+        """Identify and rank most out-of-line bins (mispriced) as signal features"""
+        bin_signals = []
 
-        for bin in sorted_bins[:3]:  # Limit to 3 most overpriced
-            if bin.no_price > 0:
-                trade = {
-                    'action': 'buy_no',
+        for bin in bins:
+            if direction == "overbooked":
+                # In overbooked state, YES prices are too high (sell signal)
+                # Use ASK (bid for sells) - what we'd receive
+                ask_price = bin.yes_price
+                deviation = ask_price
+                signal = {
+                    'bin_range': bin.bin_range,
                     'slug': bin.slug,
-                    'bin': bin.bin_range,
-                    'price': round(bin.no_price, 4),
-                    'reason': f'overpriced YES at {bin.yes_price}'
+                    'yes_price': round(bin.yes_price, 4),
+                    'no_price': round(bin.no_price, 4),
+                    'executable_price': round(ask_price, 4),  # Ask for sells
+                    'deviation_from_fair': round(deviation, 4)
                 }
-                trades.append(trade)
-
-        return trades
-
-    def _generate_underbooked_trades(self, bins: List[BinMarket], book_value: float) -> List[Dict]:
-        """Buy YES on most underpriced bins when book sum < 1.0"""
-        # Sort by YES price (most underpriced first)
-        sorted_bins = sorted(bins, key=lambda b: b.yes_price)
-        trades = []
-
-        for bin in sorted_bins[:3]:  # Limit to 3 most underpriced
-            if bin.yes_price > 0:
-                trade = {
-                    'action': 'buy_yes',
+            else:
+                # In underbooked state, YES prices are too low (buy signal)
+                # Use BID (ask for buys) - what we'd pay
+                bid_price = bin.yes_price
+                deviation = bid_price
+                signal = {
+                    'bin_range': bin.bin_range,
                     'slug': bin.slug,
-                    'bin': bin.bin_range,
-                    'price': round(bin.yes_price, 4),
-                    'reason': f'underpriced YES at {bin.yes_price}'
+                    'yes_price': round(bin.yes_price, 4),
+                    'no_price': round(bin.no_price, 4),
+                    'executable_price': round(bid_price, 4),  # Bid for buys
+                    'deviation_from_fair': round(deviation, 4)
                 }
-                trades.append(trade)
 
-        return trades
+            bin_signals.append(signal)
 
-    def _generate_full_arb_trades(self, bins: List[BinMarket], book_value: float) -> List[Dict]:
-        """Generate trades for full arbitrage across all bins"""
-        trades = []
+        # Sort by deviation (most mispriced first)
+        bin_signals.sort(key=lambda b: b['deviation_from_fair'], reverse=True)
+        return bin_signals
 
-        if book_value > 1.0:
-            # Buy all NOs
-            for bin in bins:
-                if bin.no_price > 0:
-                    trade = {
-                        'action': 'buy_no',
-                        'slug': bin.slug,
-                        'bin': bin.bin_range,
-                        'price': round(bin.no_price, 4),
-                        'reason': 'full arbitrage - buy all NOs'
-                    }
-                    trades.append(trade)
-        else:
-            # Buy all YESes
-            for bin in bins:
-                if bin.yes_price > 0:
-                    trade = {
-                        'action': 'buy_yes',
-                        'slug': bin.slug,
-                        'bin': bin.bin_range,
-                        'price': round(bin.yes_price, 4),
-                        'reason': 'full arbitrage - buy all YESes'
-                    }
-                    trades.append(trade)
-
-        return trades
-
-    def scan(self, markets: List[Dict]) -> List[DutchBookArb]:
-        """Scan markets for arbitrage opportunities"""
+    def scan(self, markets: List[Dict]) -> List[BookImbalance]:
+        """Scan markets for distribution inconsistency signals"""
         self.stats['scans'] += 1
         self.stats['last_scan'] = datetime.now().isoformat()
 
         grouped = self.group_markets_by_city_date(markets)
-        opportunities = []
+        signals = []
 
         for city_date, bins in grouped.items():
-            arb = self.detect_arbitrage(city_date, bins)
-            if arb:
-                opportunities.append(arb)
+            signal = self.detect_arbitrage(city_date, bins)
+            if signal:
+                signals.append(signal)
                 self.stats['opportunities_found'] += 1
-                self.stats['total_edge'] += arb.edge
+                self.stats['total_edge'] += signal.imbalance_pct
 
                 logger.info(
-                    f"Dutch Book: {arb.city} {arb.date} - "
-                    f"{arb.arbitrage_type} (edge={arb.edge:.2%}, profit={arb.profit_percent}%)"
+                    f"Distribution Inconsistency: {signal.city} {signal.date} - "
+                    f"{signal.direction} (imbalance={signal.imbalance_pct:.2%}, "
+                    f"net_edge={signal.net_edge_after_fees:.2%}, executable={signal.executable})"
                 )
 
                 # Publish to shared state if available
                 if self.shared_state:
                     self.shared_state.publish(
-                        'dutch_book',
-                        f"{arb.city}_{arb.date}",
-                        asdict(arb)
+                        'distribution_inconsistency',
+                        f"{signal.city}_{signal.date}",
+                        asdict(signal)
                     )
 
-        return opportunities
+        return signals
 
     def get_stats(self) -> Dict[str, Any]:
         """Return scanner statistics for API endpoint"""
