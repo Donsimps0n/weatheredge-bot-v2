@@ -68,9 +68,18 @@ _shared_obs: dict = {}  # city -> temp_f (set by obs_confirm agent)
 
 
 def set_shared_obs(obs_data: dict):
-    """Called by ObsConfirmAgent to share its observations with the exit engine."""
+    """Called by ObsConfirmAgent to share its observations with the exit engine.
+    obs_data may be {city: temp_f} or {city: {temp_f: ..., ...}} from get_live_obs().
+    We normalize to {city: float} for get_obs_temp_f() compatibility.
+    """
     global _shared_obs
-    _shared_obs = obs_data
+    normalized = {}
+    for city, val in obs_data.items():
+        if isinstance(val, dict):
+            normalized[city] = val.get('temp_f', val.get('temp_c', 0))
+        else:
+            normalized[city] = float(val)
+    _shared_obs = normalized
 
 
 def get_obs_temp_f(city):
