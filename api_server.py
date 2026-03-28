@@ -1982,8 +1982,8 @@ def _run_auto_trade_cycle():
                 if not _v_ok:
                     logger.warning("RUFLO_REJECT: %s | %s", sig.get('city', ''), _v_reason)
                     continue
-            our_prob = sig.get("our_prob", 50) / 100.0
-            mkt_price = sig.get("market_price", 50) / 100.0
+            our_prob = float(sig.get("our_prob", 50)) / 100.0
+            mkt_price = float(sig.get("market_price", 50)) / 100.0
             # CLOB book check: compute edge-at-fill with real depth
             _clob_info = None
             if HAS_CLOB_BOOK:
@@ -2017,9 +2017,9 @@ def _run_auto_trade_cycle():
             # Size = dollars to spend / price = number of shares
             # Polymarket min order is $1, so ensure size * price >= 1
             import math
-            _coord_mult = sig.get("coordinator_size_mult", 1.0)
-            _lm_mult = sig.get("last_mile_multiplier", 1.0)
-            _total_mult = _coord_mult * _lm_mult * _liquidity_mult
+            _coord_mult = float(sig.get("coordinator_size_mult", 1.0))
+            _lm_mult = float(sig.get("last_mile_multiplier", 1.0))
+            _total_mult = _coord_mult * _lm_mult * float(_liquidity_mult)
             spend = max(1.0, cfg["max_size"] * _total_mult)  # coordinator + last_mile + liquidity adjusted
             size = math.ceil(spend / price)
             size = max(1, size)
@@ -2505,9 +2505,11 @@ def _run_auto_trade_cycle():
             except Exception:
                 pass
     except Exception as exc:
-        _trade_cycle_log.append({"ts": datetime.now(timezone.utc).isoformat(), "status": "ERROR", "error": str(exc)})
+        import traceback as _tb
+        _tb_str = _tb.format_exc()
+        _trade_cycle_log.append({"ts": datetime.now(timezone.utc).isoformat(), "status": "ERROR", "error": str(exc), "traceback": _tb_str[-500:]})
         if len(_trade_cycle_log) > 30: _trade_cycle_log.pop(0)
-        logger.error("Auto-trade cycle error: %s", exc)
+        logger.error("Auto-trade cycle error: %s\n%s", exc, _tb_str)
 
 
 def _start_auto_trade_timer():
