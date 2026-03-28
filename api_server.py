@@ -1673,7 +1673,7 @@ def _run_auto_trade_cycle():
                             'city': _city,
                             'mode': 'PAPER',
                         })
-                        _trade_log.append(f"RUFLO_NO_HARVEST PAPER: {_city} | NO @ {_no_px:.3f} | expected +{_exp:.1f}% | our_prob={_oprob:.1f}%")
+                        _trade_log.append({"signal": "NO_HARVEST", "city": _city, "side": "NO", "price": _no_px, "size": _no_sz, "ev": _exp, "our_prob": _oprob, "mode": "PAPER", "timestamp": time.time()})
                         logger.info("RUFLO_NO_HARVEST PAPER: %s | NO @ %.3f | expected +%.1f%% | our_prob=%.1f%%",
                                     _city, _no_px, _exp, _oprob)
                         if HAS_LEDGER:
@@ -1694,7 +1694,7 @@ def _run_auto_trade_cycle():
                                 price=_no_px, size=_no_sz, side=BUY, token_id=_no_tok
                             ))
                             _traded_tokens.add(_no_tok)
-                            _trade_log.append(f"RUFLO_NO_HARVEST LIVE: {_city} | NO @ {_no_px:.3f} | expected +{_exp:.1f}%")
+                            _trade_log.append({"signal": "NO_HARVEST", "city": _city, "side": "NO", "price": _no_px, "size": _no_sz, "ev": _exp, "mode": "LIVE", "timestamp": time.time()})
                             logger.info("RUFLO_NO_HARVEST LIVE: %s | NO @ %.3f | expected +%.1f%% | order=%s",
                                         _city, _no_px, _exp, _no_order)
                         except Exception as _no_err:
@@ -1731,7 +1731,7 @@ def _run_auto_trade_cycle():
                             'signal': 'YES_HARVEST',
                             'city': _city,
                         })
-                        _trade_log.append(f"RUFLO_YES_HARVEST PAPER: {_city} | YES @ {_yes_px:.3f} | expected +{_exp:.1f}% | our_prob={_oprob:.1f}%")
+                        _trade_log.append({"signal": "YES_HARVEST", "city": _city, "side": "YES", "price": _yes_px, "size": _yes_sz, "ev": _exp, "our_prob": _oprob, "mode": "PAPER", "timestamp": time.time()})
                         logger.info("RUFLO_YES_HARVEST PAPER: %s | YES @ %.3f | expected +%.1f%% | our_prob=%.1f%%",
                                     _city, _yes_px, _exp, _oprob)
                     else:
@@ -1740,7 +1740,7 @@ def _run_auto_trade_cycle():
                                 price=_yes_px, size=_yes_sz, side=BUY, token_id=_yes_tok
                             ))
                             _traded_tokens.add(_yes_tok)
-                            _trade_log.append(f"RUFLO_YES_HARVEST LIVE: {_city} | YES @ {_yes_px:.3f} | expected +{_exp:.1f}%")
+                            _trade_log.append({"signal": "YES_HARVEST", "city": _city, "side": "YES", "price": _yes_px, "size": _yes_sz, "ev": _exp, "mode": "LIVE", "timestamp": time.time()})
                             logger.info("RUFLO_YES_HARVEST LIVE: %s | YES @ %.3f | expected +%.1f%% | order=%s",
                                         _city, _yes_px, _exp, _yes_order)
                         except Exception as _yes_err:
@@ -1936,7 +1936,7 @@ def _start_position_monitor():
             if not ACTIVE_TRADER_AVAILABLE or not _auto_trade_active:
                 continue
             try:
-                live_trades = [t for t in _trade_log if t.get("mode") == "LIVE"]
+                live_trades = [t for t in _trade_log if isinstance(t, dict) and t.get("mode") == "LIVE"]
                 if not live_trades:
                     continue
                 now_utc = datetime.now(timezone.utc)
