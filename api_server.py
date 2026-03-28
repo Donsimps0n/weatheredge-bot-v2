@@ -8,6 +8,10 @@ import time
 import logging
 import subprocess
 from datetime import datetime, timezone, timedelta
+try:
+    from zoneinfo import ZoneInfo
+except ImportError:
+    ZoneInfo = None  # Python 3.8 fallback
 
 logging.basicConfig(
     level=logging.INFO,
@@ -23,6 +27,29 @@ try:
     ).decode().strip()
 except Exception:
     GIT_COMMIT = "unknown"
+
+# ── Per-city timezone lookup (for post-peak cutoff) ──
+_CITY_TZ = {}  # city_name_lower -> ZoneInfo
+try:
+    from config import CITIES as _CFG_CITIES
+    if ZoneInfo:
+        for _c in _CFG_CITIES:
+            _tz_str = _c.get("timezone", "")
+            if _tz_str:
+                try:
+                    _CITY_TZ[_c["city"].lower()] = ZoneInfo(_tz_str)
+                except Exception:
+                    pass
+        logger.info("CITY_TZ: loaded %d city timezones", len(_CITY_TZ))
+except ImportError:
+    logger.warning("config.CITIES not available; post-peak cutoff uses EST fallback")
+
+def _get_local_hour(city_name: str) -> int:
+    """Get current local hour for a city. Falls back to EST if unknown."""
+    tz = _CITY_TZ.get(city_name.lower())
+    if tz:
+        return datetime.now(tz).hour
+    return (datetime.now(timezone.utc).hour - 5) % 24  # EST fallback
 
 # ---------- Flask setup ----------
 try:
@@ -1916,15 +1943,14 @@ def _run_auto_trade_cycle():
             # Post-peak same-day cutoff: don't open new positions on same-day
             # markets after 5pm local (peak temp already locked in, no edge left)
             _q_lower = sig.get("question", "").lower()
-            _utc_hour = datetime.now(timezone.utc).hour
-            _est_hour = (_utc_hour - 5) % 24  # rough EST approximation
+            _local_hr = _get_local_hour(_city)
             _dm_check = _re.search(r'(?:march|april|may|june|july|aug|sep|oct|nov|dec|jan|feb)\s+(\d+)', _q_lower)
             _is_same_day = False
             if _dm_check:
                 _qday = int(_dm_check.group(1))
                 _is_same_day = _qday == datetime.now(timezone.utc).day
-            if _is_same_day and _est_hour >= 17:
-                logger.info("POST_PEAK: %s | same-day market, local hour %d >= 17, skipping new entry", _city, _est_hour)
+            if _is_same_day and _local_hr >= 17:
+                logger.info("POST_PEAK: %s | same-day market, local hour %d >= 17, skipping new entry", _city, _local_hr)
                 continue
             # Entry kill switch: skip if physically impossible to reach temperature
             if ACTIVE_TRADER_AVAILABLE:
@@ -1936,7 +1962,7 @@ def _run_auto_trade_cycle():
                     _bin_lo, _bin_hi = 0.0, _threshold
                 else:  # exact / between range
                     _bin_lo, _bin_hi = _threshold - 0.9, _threshold + 0.9
-                _local_hour = (datetime.now(timezone.utc).hour - 5) % 24
+                _local_hour = _get_local_hour(sig.get("city", ""))
                 _ok, _reason = should_enter(sig.get("city", ""), _bin_lo, _bin_hi, _local_hour)
                 if not _ok:
                     logger.warning("ENTRY_KILL: %s bin=%.1f-%.1f | %s", sig.get("city",""), _bin_lo, _bin_hi, _reason)
@@ -2228,16 +2254,15 @@ def _run_auto_trade_cycle():
 
                 # ── GATE 2: Post-peak same-day cutoff ──
                 _at_q_lower = _at.get('question', '').lower()
-                _at_utc_hour = datetime.now(timezone.utc).hour
-                _at_est_hour = (_at_utc_hour - 5) % 24
+                _at_local_hr = _get_local_hour(_at_city)
                 _at_dm = _re.search(r'(?:march|april|may|june|july|aug|sep|oct|nov|dec|jan|feb)\s+(\d+)', _at_q_lower)
                 _at_same_day = False
                 if _at_dm:
                     _at_qday = int(_at_dm.group(1))
                     _at_same_day = _at_qday == datetime.now(timezone.utc).day
-                if _at_same_day and _at_est_hour >= 17:
-                    logger.info("AGENT_POST_PEAK: %s/%s | same-day, hour %d >= 17",
-                                _at_sig, _at_city, _at_est_hour)
+                if _at_same_day and _at_local_hr >= 17:
+                    logger.info("AGENT_POST_PEAK: %s/%s | same-day, local hour %d >= 17",
+                                _at_sig, _at_city, _at_local_hr)
                     _agent_rejected += 1
                     continue
 
@@ -2250,8 +2275,8 @@ def _run_auto_trade_cycle():
                         _at_bin_hi = float(_at_bin_match.group(2))
                     else:
                         _at_bin_lo, _at_bin_hi = 0.0, 999.0  # Can't parse, allow through
-                    _at_local_hour = (_at_utc_hour - 5) % 24
-                    _at_ok, _at_kill_reason = should_enter(_at_city, _at_bin_lo, _at_bin_hi, _at_local_hour)
+                    _at_kill_hour = _get_local_hour(_at_city)
+                    _at_ok, _at_kill_reason = should_enter(_at_city, _at_bin_lo, _at_bin_hi, _at_kill_hour)
                     if not _at_ok:
                         logger.warning("AGENT_ENTRY_KILL: %s/%s | %s", _at_sig, _at_city, _at_kill_reason)
                         _agent_rejected += 1
@@ -2272,8 +2297,9 @@ def _run_auto_trade_cycle():
                         _agent_rejected += 1
                         continue
 
-                # ── GATE 5: CLOB book check ──
-                if HAS_CLOB_BOOK and _at_sig != 'HEDGE':
+                # ── GATE 5: CLOB book check (hedges NOT exempt — bad liquidity kills hedges too) ──
+                # TODO: add book staleness gate (book_age_seconds > 10s) before live trading
+                if HAS_CLOB_BOOK:
                     try:
                         _at_book = clob_book.get_book(_at_tok)
                         if _at_book:
@@ -2303,6 +2329,8 @@ def _run_auto_trade_cycle():
                         'our_prob': _at_oprob,
                         'corrected_prob': _at_corr,
                         'bias_correction_f': _at_bias,
+                        'mid_price_at_decision': _at.get('market_price', _at_px),
+                        'edge_at_decision': _at_edge,
                         'city': _at_city,
                         'mode': 'PAPER',
                         'source': _at.get('source', 'agent'),

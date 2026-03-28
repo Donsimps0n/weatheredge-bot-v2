@@ -24,7 +24,7 @@ FULL_ARB_THRESHOLD = 0.06  # 6% for full all-bins arbitrage
 # Polymarket CLOB fees are in bps, not percent — many weather markets are fee-free.
 # We use a conservative spread+cost estimate rather than a fixed fee percentage.
 # This is the estimated round-trip execution cost per bin (spread + any fees).
-EXECUTION_COST_PER_BIN = 0.01  # 1 cent per bin round-trip (conservative estimate)
+EXECUTION_COST_USD_PER_BIN = 0.01  # $0.01 per bin round-trip (spread + fees estimate)
 MAX_TRADES_PER_SCAN = 8
 SCAN_INTERVAL_S = 120
 
@@ -162,7 +162,7 @@ class DutchBookScanner:
 
         # Calculate net edge after execution costs (spread + fees per bin)
         num_bins_to_trade = min(3, len(bins))  # Rank top 3 mispriced bins
-        net_edge = imbalance - (num_bins_to_trade * EXECUTION_COST_PER_BIN)
+        net_edge = imbalance - (num_bins_to_trade * EXECUTION_COST_USD_PER_BIN)
 
         # Only executable if net edge > 1% after all fees
         executable = net_edge > 0.01
