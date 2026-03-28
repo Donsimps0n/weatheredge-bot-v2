@@ -212,51 +212,47 @@ td{{padding:8px 12px;border-bottom:1px solid #1e293b0a;color:#cbd5e1}}
   </div>
 </div>
 <script>
-(function loadPnL() {
+(function loadPnL() {{
   fetch('/api/ledger/open-positions')
-    .then(r => r.json())
-    .then(d => {
-      if (!d.ok) { document.getElementById('pnl-badge').textContent = 'unavailable'; return; }
-      const s = d.summary;
-      const sign = s.unrealized_pnl >= 0 ? '+' : '';
-      const col = s.unrealized_pnl >= 0 ? '#4ade80' : '#f87171';
+    .then(function(r) {{ return r.json(); }})
+    .then(function(d) {{
+      if (!d.ok) {{ document.getElementById('pnl-badge').textContent = 'unavailable'; return; }}
+      var s = d.summary;
+      var sign = s.unrealized_pnl >= 0 ? '+' : '';
+      var col = s.unrealized_pnl >= 0 ? '#4ade80' : '#f87171';
       document.getElementById('pnl-badge').innerHTML =
         '<span style="color:' + col + ';font-weight:600">' + sign + s.unrealized_pnl.toFixed(2) + ' USDC (' + sign + s.pnl_pct.toFixed(2) + '%)</span>' +
         ' &mdash; ' + d.count + ' open | ' + s.winners + ' up &bull; ' + s.losers + ' down &bull; ' + s.flat + ' flat';
-      const sumDiv = document.getElementById('pnl-summary');
-      sumDiv.innerHTML = [
+      var sumDiv = document.getElementById('pnl-summary');
+      var cards = [
         ['Deployed', '$' + s.total_cost.toFixed(2), '#94a3b8'],
         ['Current Value', '$' + s.total_value.toFixed(2), '#94a3b8'],
         ['Unrealized P&L', sign + '$' + s.unrealized_pnl.toFixed(2), col],
         ['Return', sign + s.pnl_pct.toFixed(2) + '%', col],
         ['Winning', s.winners, '#4ade80'],
-        ['Losing', s.losers, '#f87171'],
-      ].map(([l, v, c]) =>
-        '<div style="background:#1e293b;border-radius:8px;padding:10px 16px;min-width:110px">' +
-        '<div style="font-size:11px;opacity:0.5;margin-bottom:4px">' + l + '</div>' +
-        '<div style="font-size:18px;font-weight:700;color:' + c + '">' + v + '</div></div>'
-      ).join('');
-      const tbody = d.positions.map(p => {
-        const pnlCol = p.unrealized_pnl > 0 ? '#4ade80' : p.unrealized_pnl < 0 ? '#f87171' : '#94a3b8';
-        const pnlSign = p.unrealized_pnl >= 0 ? '+' : '';
+        ['Losing', s.losers, '#f87171']
+      ];
+      sumDiv.innerHTML = cards.map(function(c) {{
+        return '<div style="background:#1e293b;border-radius:8px;padding:10px 16px;min-width:110px">' +
+          '<div style="font-size:11px;opacity:0.5;margin-bottom:4px">' + c[0] + '</div>' +
+          '<div style="font-size:18px;font-weight:700;color:' + c[2] + '">' + c[1] + '</div></div>';
+      }}).join('');
+      var rows = d.positions.map(function(p) {{
+        var pc = p.unrealized_pnl > 0 ? '#4ade80' : p.unrealized_pnl < 0 ? '#f87171' : '#94a3b8';
+        var ps = p.unrealized_pnl >= 0 ? '+' : '';
         return '<tr>' +
-          '<td>' + p.city + '</td>' +
-          '<td>' + p.signal + '</td>' +
-          '<td>' + p.entry_price.toFixed(3) + '</td>' +
-          '<td>' + p.current_price.toFixed(3) + '</td>' +
-          '<td>' + p.size + '</td>' +
-          '<td>$' + p.cost.toFixed(2) + '</td>' +
-          '<td>$' + p.current_value.toFixed(2) + '</td>' +
-          '<td style="color:' + pnlCol + ';font-weight:600">' + pnlSign + p.unrealized_pnl.toFixed(3) + '</td>' +
-          '<td style="color:' + pnlCol + ';font-weight:600">' + pnlSign + p.pnl_pct.toFixed(1) + '%</td>' +
-          '</tr>';
-      }).join('');
-      const tbl = document.getElementById('pnl-table');
-      tbl.innerHTML = tbl.rows[0].outerHTML + tbody;
+          '<td>' + p.city + '</td><td>' + p.signal + '</td>' +
+          '<td>' + p.entry_price.toFixed(3) + '</td><td>' + p.current_price.toFixed(3) + '</td>' +
+          '<td>' + p.size + '</td><td>$' + p.cost.toFixed(2) + '</td><td>$' + p.current_value.toFixed(2) + '</td>' +
+          '<td style="color:' + pc + ';font-weight:600">' + ps + p.unrealized_pnl.toFixed(3) + '</td>' +
+          '<td style="color:' + pc + ';font-weight:600">' + ps + p.pnl_pct.toFixed(1) + '%</td></tr>';
+      }}).join('');
+      var tbl = document.getElementById('pnl-table');
+      tbl.innerHTML = tbl.rows[0].outerHTML + rows;
       tbl.style.display = 'table';
-    })
-    .catch(() => { document.getElementById('pnl-badge').textContent = 'error loading positions'; });
-})();
+    }})
+    .catch(function() {{ document.getElementById('pnl-badge').textContent = 'error loading positions'; }});
+}})();
 </script>
 <div class="agents"><h2>Agent Health</h2><div class="agent-grid">
 """
