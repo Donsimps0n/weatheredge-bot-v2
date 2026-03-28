@@ -2027,6 +2027,11 @@ def _start_position_monitor():
                         "mins_to_resolution": est_resolution_min,
                         "token_id": token_id,
                         "_trade_ref": t,  # reference back so we can mark exited
+                        # Forecast data for smart exit decisions
+                        "our_prob": t.get("our_prob", 0),
+                        "signal": t.get("signal", ""),
+                        "ev": t.get("ev", 0),
+                        "direction": t.get("direction", ""),
                     })
                 exit_actions = run_position_monitor(positions)
                 for action in exit_actions:

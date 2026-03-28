@@ -78,32 +78,77 @@ def should_enter(city, bin_lo, bin_hi, local_hour):
     return True, f'OK: obs={obs}F achievable={achievable:.1f}F bin={bin_lo}-{bin_hi}F'
 
 def should_exit_position(city, bin_lo, bin_hi, entry_price, current_price,
-                          entry_cost, current_value, mins_to_resolution, local_hour):
+                          entry_cost, current_value, mins_to_resolution, local_hour,
+                          our_prob=0, signal='', ev=0, direction=''):
     """
     Smart exit engine: returns (exit, reason, action)
     action: 'SELL_ALL', 'SELL_HALF', 'HOLD'
+
+    Uses 4-layer decision hierarchy:
+      1. Fact-based (NWS obs) — overrides everything
+      2. Forecast confidence — if our model still says strong edge, hold through spread noise
+      3. Spread-aware pricing — don't cut on illiquid bid alone
+      4. Time + price — last resort for deep losers near resolution
     """
     obs = get_obs_temp_f(city)
 
-    # Rule 1: Fact-based kill - obs proves bin impossible
+    # ── Layer 1: FACT-BASED (NWS observations) ──
     if obs is not None:
         achievable = max_achievable_today(obs, local_hour)
         if achievable < bin_lo:
             return True, f'OBS_KILL: max_achievable={achievable:.1f}F < bin_lo={bin_lo}F', 'SELL_ALL'
-        # Bin already passed (temp went above hi and cooling)
         if local_hour >= 16 and obs > bin_hi + 1:
             return True, f'OBS_PASSED: obs={obs}F > bin_hi={bin_hi}F and cooling', 'SELL_ALL'
-        # Confirmed winner - hold to full payout
         if obs >= bin_lo and obs <= bin_hi:
             return False, f'WIN_CONFIRMED: obs={obs}F inside bin {bin_lo}-{bin_hi}F - HOLD TO $1', 'HOLD'
 
-    # Rule 2: Time-based exit for deep losers
+    # ── Layer 2: FORECAST CONFIDENCE ──
+    # If our model still has high conviction, the low market bid is
+    # likely spread noise / illiquidity, not new information.
+    # Don't cut a position our model says is still a good bet.
+    is_no_harvest = 'NO_HARVEST' in signal or 'YES_HARVEST' in signal
+    if our_prob > 0 and not is_no_harvest:
+        # For directional YES/NO bets: hold if our model confidence is strong
+        mkt_implied = current_price * 100 if current_price < 1 else current_price
+        model_edge = our_prob - mkt_implied  # positive = we think it's underpriced
+
+        if model_edge > 10:
+            # Our model says >10pp edge over market — this is spread/mispricing, not a loss
+            return False, f'MODEL_HOLD: our_prob={our_prob:.1f}% mkt={mkt_implied:.1f}% edge={model_edge:+.1f}pp — holding through spread', 'HOLD'
+
+        if our_prob > 25 and model_edge > 0:
+            # Moderate confidence and still positive edge — don't cut yet
+            if mins_to_resolution > 120:
+                return False, f'MODEL_HOLD: our_prob={our_prob:.1f}% > 25% edge={model_edge:+.1f}pp >2h left — patience', 'HOLD'
+
+    # ── Layer 3: SPREAD-AWARE PRICING ──
+    # In thin weather markets, the bid can be far below fair value.
+    # If the bid dropped but there's no volume (just wide spread), hold.
+    if entry_cost > 0:
+        ratio = current_value / entry_cost
+
+        # Check if the price drop is just spread, not a real move:
+        # If entry was a low-probability bet (< $0.20), the bid naturally
+        # sits far below the ask. A 50% "drop" from $0.10 to $0.05 is just
+        # normal spread in a thin market, not a real loss signal.
+        if entry_price < 0.20 and ratio > 0.2 and mins_to_resolution > 240:
+            return False, f'SPREAD_HOLD: thin mkt entry=${entry_price:.2f} ratio={ratio:.0%} >4h left — spread noise', 'HOLD'
+
+    # ── Layer 4: TIME + PRICE EXIT (last resort) ──
     if mins_to_resolution < 120 and entry_cost > 0:
         ratio = current_value / entry_cost
-        if ratio < 0.3:
+        if ratio < 0.15:
+            # Very deep loss near resolution — even our model can't save this
             return True, f'TIME_EXIT: {mins_to_resolution:.0f}min left, value at {ratio*100:.0f}% of entry', 'SELL_ALL'
+        if ratio < 0.3 and our_prob < 15:
+            # Low model confidence AND low market price — real loser
+            return True, f'TIME_EXIT: {mins_to_resolution:.0f}min left, value at {ratio*100:.0f}%, model={our_prob:.0f}%', 'SELL_ALL'
+        if ratio < 0.3 and our_prob >= 15:
+            # Low market price BUT model still has some confidence — log but hold
+            log.info('HOLD_OVERRIDE: %s | ratio=%.0f%% but our_prob=%.1f%% — model says hold', city, ratio*100, our_prob)
+            return False, f'HOLD_OVERRIDE: market says {ratio*100:.0f}% but model={our_prob:.1f}% — trusting forecast', 'HOLD'
 
-    # Rule 3: Profit take for momentum positions
+    # ── Profit taking ──
     if entry_cost > 0:
         ratio = current_value / entry_cost
         if ratio > 3.0:
@@ -135,7 +180,11 @@ def run_position_monitor(positions, get_market_price_fn=None):
             entry_cost=pos.get('entry_cost', 0),
             current_value=pos.get('current_value', 0),
             mins_to_resolution=pos.get('mins_to_resolution', 9999),
-            local_hour=local_hour
+            local_hour=local_hour,
+            our_prob=pos.get('our_prob', 0),
+            signal=pos.get('signal', ''),
+            ev=pos.get('ev', 0),
+            direction=pos.get('direction', ''),
         )
         if exit_flag:
             log.warning('EXIT SIGNAL: %s | %s | %s', city, reason, action)
