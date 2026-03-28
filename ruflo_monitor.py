@@ -57,6 +57,32 @@ class PreTradeValidator:
 
         return True, ' | '.join(checks)
 
+    def validate_safety(self, signal: dict) -> tuple:
+        """Safety-only validation (skips EV check). Use for hedges and
+        variance-reduction trades that don't seek edge but still need
+        resolution-time, size-cap, and basic sanity checks."""
+        checks = []
+
+        # 1. Market must not be within 1h of resolution
+        end_date = signal.get('end_date', '')
+        if end_date:
+            try:
+                end = datetime.fromisoformat(end_date.replace('Z', '+00:00'))
+                mins_left = (end - datetime.now(timezone.utc)).total_seconds() / 60
+                if mins_left < 60:
+                    return False, f'REJECT: only {mins_left:.0f} min to resolution'
+                checks.append(f'{mins_left:.0f} min to resolution OK')
+            except Exception:
+                pass
+
+        # 2. Trade size must be <= $10
+        size = signal.get('size', 999)
+        if size > 10:
+            return False, f'REJECT: size ${size} > $10 cap'
+        checks.append(f'size ${size} OK')
+
+        return True, ' | '.join(checks)
+
 # ============================================================
 # AGENT 2 - POSITION MONITOR
 # ============================================================

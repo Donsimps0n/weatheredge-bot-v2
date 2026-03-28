@@ -1440,7 +1440,9 @@ _paper_trades = []
 _traded_tokens = set()
 _trade_cycle_log = []  # Cycle log for /api/trade-debug monitoring
 _city_day_exposure = {}  # {("city", "YYYY-MM-DD"): total_usd} — exposure cap tracking
+_city_day_hedge_exposure = {}  # {("city", "YYYY-MM-DD"): hedge_usd} — hedge sub-cap
 _MAX_CITY_DAY_EXPOSURE = 50  # Max $50 deployed per city per day
+_MAX_HEDGE_PER_CITY_DAY = 10  # Max $10 in hedge notional per city per day
 _MAX_ADJACENT_BINS = 3  # Max trades on adjacent temperature bins for same city/day
 
 def _run_auto_trade_cycle():
@@ -2252,6 +2254,15 @@ def _run_auto_trade_cycle():
                     _agent_rejected += 1
                     continue
 
+                # ── GATE 1b: Hedge sub-cap — prevent hedge stacking ──
+                if _at_sig == 'HEDGE':
+                    _at_hedge_exp = _city_day_hedge_exposure.get(_at_city_key, 0)
+                    if _at_hedge_exp >= _MAX_HEDGE_PER_CITY_DAY:
+                        logger.info("AGENT_HEDGE_CAP: %s | $%.0f hedge deployed (cap=$%d)",
+                                    _at_city, _at_hedge_exp, _MAX_HEDGE_PER_CITY_DAY)
+                        _agent_rejected += 1
+                        continue
+
                 # ── GATE 2: Post-peak same-day cutoff ──
                 _at_q_lower = _at.get('question', '').lower()
                 _at_local_hr = _get_local_hour(_at_city)
@@ -2283,7 +2294,9 @@ def _run_auto_trade_cycle():
                         continue
 
                 # ── GATE 4: PreTradeValidator ──
-                if RUFLO_AVAILABLE and _at_sig != 'HEDGE':
+                # Hedges use validate_safety() (skips EV check, keeps resolution-time + size cap).
+                # All other agents use full validate() (includes EV minimum).
+                if RUFLO_AVAILABLE:
                     _at_ruflo_sig = {
                         'confidence': _at.get('confidence', _at_edge),
                         'theo_ev': _at_edge,
@@ -2291,7 +2304,10 @@ def _run_auto_trade_cycle():
                         'end_date': _at.get('end_date', ''),
                         'size': _at_sz,
                     }
-                    _at_v_ok, _at_v_reason = _ruflo_validator.validate(_at_ruflo_sig)
+                    if _at_sig == 'HEDGE':
+                        _at_v_ok, _at_v_reason = _ruflo_validator.validate_safety(_at_ruflo_sig)
+                    else:
+                        _at_v_ok, _at_v_reason = _ruflo_validator.validate(_at_ruflo_sig)
                     if not _at_v_ok:
                         logger.warning("AGENT_RUFLO_REJECT: %s/%s | %s", _at_sig, _at_city, _at_v_reason)
                         _agent_rejected += 1
@@ -2372,6 +2388,8 @@ def _run_auto_trade_cycle():
                 # Track exposure for agent trades too
                 _at_spend = _at_px * _at_sz
                 _city_day_exposure[_at_city_key] = _at_exposure + _at_spend
+                if _at_sig == 'HEDGE':
+                    _city_day_hedge_exposure[_at_city_key] = _city_day_hedge_exposure.get(_at_city_key, 0) + _at_spend
                 _traded_tokens.add(_at_tok)
                 _agent_traded += 1
                 traded += 1
