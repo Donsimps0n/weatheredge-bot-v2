@@ -13,7 +13,10 @@ from typing import List, Dict, Optional
 
 log = logging.getLogger(__name__)
 
-DB_PATH = os.environ.get("LEDGER_DB", "ledger.db")
+# On Railway, use /data volume (persistent). Locally, use ledger.db in project dir.
+# Set LEDGER_DB env var to override.
+_default_db = "/data/ledger.db" if os.path.isdir("/data") else "ledger.db"
+DB_PATH = os.environ.get("LEDGER_DB", _default_db)
 
 _conn: Optional[sqlite3.Connection] = None
 
