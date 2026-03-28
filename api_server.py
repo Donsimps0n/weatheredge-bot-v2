@@ -133,6 +133,79 @@ try:
 except ImportError:
     logger.warning("obs_confirm not available")
 
+# Phase 2 agents: Dutch Book, Cross-City, METAR Intel, Last Mile, Liquidity, Hedging
+HAS_DUTCH_BOOK = False
+_dutch_book = None
+try:
+    from dutch_book import DutchBookScanner
+    _dutch_book = DutchBookScanner(
+        shared_state=_ruflo_shared if RUFLO_AVAILABLE else None,
+    )
+    HAS_DUTCH_BOOK = True
+    logger.info("Dutch Book arbitrage scanner loaded")
+except ImportError:
+    logger.warning("dutch_book not available")
+
+HAS_CROSS_CITY = False
+_cross_city = None
+try:
+    from cross_city import CrossCityCorrelationEngine
+    _cross_city = CrossCityCorrelationEngine(
+        shared_state=_ruflo_shared if RUFLO_AVAILABLE else None,
+    )
+    HAS_CROSS_CITY = True
+    logger.info("Cross-City correlation engine loaded")
+except ImportError:
+    logger.warning("cross_city not available")
+
+HAS_METAR_INTEL = False
+_metar_intel = None
+try:
+    from metar_intel import METARIntel
+    _metar_intel = METARIntel(
+        shared_state=_ruflo_shared if RUFLO_AVAILABLE else None,
+    )
+    HAS_METAR_INTEL = True
+    logger.info("METAR Intel agent loaded")
+except ImportError:
+    logger.warning("metar_intel not available")
+
+HAS_LAST_MILE = False
+_last_mile = None
+try:
+    from last_mile import LastMileAgent
+    _last_mile = LastMileAgent(
+        shared_state=_ruflo_shared if RUFLO_AVAILABLE else None,
+    )
+    HAS_LAST_MILE = True
+    logger.info("Last Mile agent loaded")
+except ImportError:
+    logger.warning("last_mile not available")
+
+HAS_LIQUIDITY = False
+_liquidity_timer = None
+try:
+    from liquidity_timing import LiquidityTimer
+    _liquidity_timer = LiquidityTimer(
+        shared_state=_ruflo_shared if RUFLO_AVAILABLE else None,
+    )
+    HAS_LIQUIDITY = True
+    logger.info("Liquidity Timer loaded")
+except ImportError:
+    logger.warning("liquidity_timing not available")
+
+HAS_HEDGE = False
+_hedge_mgr = None
+try:
+    from hedge_manager import HedgeManager
+    _hedge_mgr = HedgeManager(
+        shared_state=_ruflo_shared if RUFLO_AVAILABLE else None,
+    )
+    HAS_HEDGE = True
+    logger.info("Hedge Manager loaded")
+except ImportError:
+    logger.warning("hedge_manager not available")
+
 # Register new agents in shared state
 if RUFLO_AVAILABLE:
     if HAS_STATION_BIAS:
@@ -143,6 +216,18 @@ if RUFLO_AVAILABLE:
         _ruflo_shared.register_agent('gfs_refresh', 'GFS model update detection + delta repricing')
     if HAS_OBS_CONFIRM:
         _ruflo_shared.register_agent('obs_confirm', 'Live METAR observation confirmation/kill for 58 cities')
+    if HAS_DUTCH_BOOK:
+        _ruflo_shared.register_agent('dutch_book', 'Multi-bin arbitrage scanner — guaranteed profit from book imbalance')
+    if HAS_CROSS_CITY:
+        _ruflo_shared.register_agent('cross_city', 'Geographic correlation — propagate obs surprises to neighbors')
+    if HAS_METAR_INTEL:
+        _ruflo_shared.register_agent('metar_intel', 'Full METAR field intelligence — wind, cloud, dewpoint signals')
+    if HAS_LAST_MILE:
+        _ruflo_shared.register_agent('last_mile', 'Resolution last-mile — aggressive sizing when outcome locked in')
+    if HAS_LIQUIDITY:
+        _ruflo_shared.register_agent('liquidity_timer', 'Time-of-day execution optimization')
+    if HAS_HEDGE:
+        _ruflo_shared.register_agent('hedge_manager', 'Boundary position hedging — variance reduction')
 
 app = Flask(__name__)
 CORS(app, origins=[
@@ -1632,6 +1717,103 @@ def _run_auto_trade_cycle():
             except Exception as _obs_err:
                 logger.error("OBS_CONFIRM error: %s", _obs_err)
 
+        # ── Agent 17: METAR Intel — enrich signals with wind/cloud/dewpoint ──
+        if HAS_METAR_INTEL and _metar_intel:
+            try:
+                _metar_intel.enrich_signals(
+                    sigs,
+                    sentinel=_ruflo_sentinel if RUFLO_AVAILABLE else None,
+                )
+            except Exception as _mi_err:
+                logger.debug("METAR Intel enrich failed: %s", _mi_err)
+
+        # ── Agent 18: Cross-City Correlation — propagate obs surprises ──
+        _cross_city_trades = []
+        if HAS_CROSS_CITY and _cross_city:
+            try:
+                _cross_city.reset_cycle()
+                # Gather live obs from obs_confirm or sentinel
+                _live_obs_dict = {}
+                if HAS_OBS_CONFIRM and _obs_confirm:
+                    _live_obs_dict = _obs_confirm.get_live_obs()
+                _cross_city_trades = _cross_city.check_and_trade(
+                    all_signals=sigs,
+                    live_obs_dict=_live_obs_dict,
+                )
+                if _cross_city_trades:
+                    logger.info("CROSS_CITY: %d trades from neighbor correlation", len(_cross_city_trades))
+            except Exception as _cc_err:
+                logger.debug("Cross-City correlation failed: %s", _cc_err)
+
+        # ── Agent 19: Dutch Book — multi-bin arbitrage scanner ──
+        _dutch_book_trades = []
+        if HAS_DUTCH_BOOK and _dutch_book:
+            try:
+                _raw_markets = _state.get("markets_cache", [])
+                _db_arbs = _dutch_book.scan(_raw_markets)
+                # Convert DutchBookArb objects to trade dicts
+                for _arb in _db_arbs:
+                    for _t in getattr(_arb, 'trades', []):
+                        _dutch_book_trades.append(_t)
+                if _dutch_book_trades:
+                    logger.info("DUTCH_BOOK: %d arbitrage trades from book imbalance", len(_dutch_book_trades))
+            except Exception as _db_err:
+                logger.debug("Dutch Book scan failed: %s", _db_err)
+
+        # ── Agent 20: Last Mile — boost size when outcome is locked in ──
+        _last_mile_adjustments = []
+        if HAS_LAST_MILE and _last_mile:
+            try:
+                _lm_obs = {}
+                if HAS_OBS_CONFIRM and _obs_confirm:
+                    _lm_obs = _obs_confirm.get_live_obs()
+                _last_mile_adjustments = _last_mile.check_last_mile(
+                    all_signals=sigs,
+                    live_obs=_lm_obs,
+                    positions=_paper_trades,
+                )
+                # Apply size multipliers to signals
+                _lm_map = {a.get('city', '').lower(): a for a in _last_mile_adjustments}
+                for sig in sigs:
+                    _lm_adj = _lm_map.get(sig.get('city', '').lower())
+                    if _lm_adj:
+                        sig['last_mile_multiplier'] = _lm_adj.get('multiplier', 1.0)
+                        sig['last_mile_confidence'] = _lm_adj.get('confidence', '')
+            except Exception as _lm_err:
+                logger.debug("Last Mile check failed: %s", _lm_err)
+
+        # ── Agent 21: Liquidity Timer — time-of-day execution advice ──
+        _liquidity_mult = 1.0
+        if HAS_LIQUIDITY and _liquidity_timer:
+            try:
+                _liquidity_mult = _liquidity_timer.get_current_multiplier()
+                _exec_advice = _liquidity_timer.get_execution_advice()
+                if RUFLO_AVAILABLE:
+                    try:
+                        from dataclasses import asdict
+                        _ruflo_shared.publish('liquidity_timer', 'execution_advice', asdict(_exec_advice))
+                    except Exception:
+                        pass
+            except Exception as _liq_err:
+                logger.debug("Liquidity Timer failed: %s", _liq_err)
+
+        # ── Agent 22: Hedge Manager — boundary position hedging ──
+        _hedge_trades = []
+        if HAS_HEDGE and _hedge_mgr:
+            try:
+                _hm_obs = {}
+                if HAS_OBS_CONFIRM and _obs_confirm:
+                    _hm_obs = _obs_confirm.get_live_obs()
+                _hedge_trades = _hedge_mgr.generate_hedge_trades(
+                    positions=_paper_trades,
+                    live_obs=_hm_obs,
+                    all_signals=sigs,
+                )
+                if _hedge_trades:
+                    logger.info("HEDGE_MGR: %d hedge trades for boundary positions", len(_hedge_trades))
+            except Exception as _hm_err:
+                logger.debug("Hedge Manager failed: %s", _hm_err)
+
         # SharedState: record cycle completion
         if RUFLO_AVAILABLE:
             try:
@@ -1771,7 +1953,9 @@ def _run_auto_trade_cycle():
             # Polymarket min order is $1, so ensure size * price >= 1
             import math
             _coord_mult = sig.get("coordinator_size_mult", 1.0)
-            spend = max(1.0, cfg["max_size"] * _coord_mult)  # coordinator-adjusted size
+            _lm_mult = sig.get("last_mile_multiplier", 1.0)
+            _total_mult = _coord_mult * _lm_mult * _liquidity_mult
+            spend = max(1.0, cfg["max_size"] * _total_mult)  # coordinator + last_mile + liquidity adjusted
             size = math.ceil(spend / price)
             size = max(1, size)
             trade_info = {
@@ -1801,7 +1985,15 @@ def _run_auto_trade_cycle():
                 _trade_log.append(trade_info)
                 if len(_trade_log) > _MAX_TRADE_LOG:
                     _trade_log[:] = _trade_log[-_MAX_TRADE_LOG:]
-                logger.info("PAPER TRADE: %s %s @ %.2f x %.1f (EV=%.1f evD=%.1f)", sig_type, sig.get("city",""), price, size, sig.get("theo_ev",0), sig.get("ev_dollar",0))
+                logger.info("PAPER TRADE: %s %s @ %.2f x %.1f (EV=%.1f evD=%.1f mult=%.2f)", sig_type, sig.get("city",""), price, size, sig.get("theo_ev",0), sig.get("ev_dollar",0), _total_mult)
+                # Record fill for liquidity timing learning
+                if HAS_LIQUIDITY and _liquidity_timer:
+                    try:
+                        _liquidity_timer.record_fill(
+                            hour_et=(datetime.now(timezone.utc).hour - 4) % 24,
+                            expected_price=mkt_price, fill_price=price)
+                    except Exception:
+                        pass
                 # Persist to SQLite ledger
                 if HAS_LEDGER:
                     try:
@@ -1961,8 +2153,9 @@ def _run_auto_trade_cycle():
             except Exception as _yh_err:
                 logger.error("RUFLO_YES_HARVEST scan error: %s", _yh_err)
 
-        # ── Agent 14+15+16: Execute Sniper + GFS Delta + ObsConfirm trades ──
-        _combined_agent_trades = _snipe_trades + _gfs_delta_trades + _obs_confirm_trades
+        # ── Execute all agent trades: Sniper + GFS + ObsConfirm + CrossCity + DutchBook + Hedge ──
+        _combined_agent_trades = (_snipe_trades + _gfs_delta_trades + _obs_confirm_trades
+                                  + _cross_city_trades + _dutch_book_trades + _hedge_trades)
         if _combined_agent_trades:
             _agent_traded = 0
             for _at in _combined_agent_trades:
@@ -2033,7 +2226,10 @@ def _run_auto_trade_cycle():
                 _agent_traded += 1
                 traded += 1
             if _agent_traded:
-                logger.info("SNIPER+GFS+OBS: executed %d agent trades this cycle", _agent_traded)
+                logger.info("ALL_AGENTS: executed %d agent trades this cycle (snipe=%d gfs=%d obs=%d xcity=%d dutch=%d hedge=%d)",
+                            _agent_traded, len(_snipe_trades), len(_gfs_delta_trades),
+                            len(_obs_confirm_trades), len(_cross_city_trades),
+                            len(_dutch_book_trades), len(_hedge_trades))
 
         #ÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂ Agent 11 & 12: Exit Strategy (ProfitTaker + RiskCutter) ÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂ
         if RUFLO_AVAILABLE and _paper_trades:
@@ -2631,6 +2827,51 @@ def api_obs_live():
     live = _obs_confirm.get_live_obs()
     return jsonify({"ok": True, "cities_with_obs": len(live), "observations": live})
 
+@app.route("/api/agents/dutch-book")
+def api_dutch_book_stats():
+    """Dutch Book arbitrage scanner stats."""
+    if not HAS_DUTCH_BOOK or not _dutch_book:
+        return jsonify({"ok": False, "error": "Dutch Book not available"}), 503
+    return jsonify({"ok": True, **_dutch_book.get_stats()})
+
+@app.route("/api/agents/cross-city")
+def api_cross_city_stats():
+    """Cross-city correlation engine stats."""
+    if not HAS_CROSS_CITY or not _cross_city:
+        return jsonify({"ok": False, "error": "Cross-City not available"}), 503
+    return jsonify({"ok": True, **_cross_city.get_stats()})
+
+@app.route("/api/agents/metar-intel")
+def api_metar_intel_stats():
+    """METAR Intel agent enrichment stats."""
+    if not HAS_METAR_INTEL or not _metar_intel:
+        return jsonify({"ok": False, "error": "METAR Intel not available"}), 503
+    return jsonify({"ok": True, **_metar_intel.get_stats()})
+
+@app.route("/api/agents/last-mile")
+def api_last_mile_stats():
+    """Last Mile agent stats."""
+    if not HAS_LAST_MILE or not _last_mile:
+        return jsonify({"ok": False, "error": "Last Mile not available"}), 503
+    return jsonify({"ok": True, **_last_mile.get_stats()})
+
+@app.route("/api/agents/liquidity")
+def api_liquidity_stats():
+    """Liquidity Timer stats and current execution advice."""
+    if not HAS_LIQUIDITY or not _liquidity_timer:
+        return jsonify({"ok": False, "error": "Liquidity Timer not available"}), 503
+    from dataclasses import asdict
+    _adv = _liquidity_timer.get_execution_advice()
+    return jsonify({"ok": True, **_liquidity_timer.get_stats(),
+                    "current_advice": asdict(_adv)})
+
+@app.route("/api/agents/hedge")
+def api_hedge_stats():
+    """Hedge Manager stats."""
+    if not HAS_HEDGE or not _hedge_mgr:
+        return jsonify({"ok": False, "error": "Hedge Manager not available"}), 503
+    return jsonify({"ok": True, **_hedge_mgr.get_stats()})
+
 @app.route("/api/agents/overview")
 def api_agents_overview():
     """Overview of all agent statuses including new ones."""
@@ -2666,6 +2907,44 @@ def api_agents_overview():
             'kills': s.get('kills', 0),
             'trades': s.get('trades_generated', 0),
             'cities_with_obs': s.get('cities_with_obs', 0),
+        }
+    if HAS_DUTCH_BOOK and _dutch_book:
+        s = _dutch_book.get_stats()
+        agents['dutch_book'] = {
+            'active': True, 'scans': s.get('total_scans', 0),
+            'opportunities': s.get('opportunities_found', 0),
+            'avg_edge': s.get('avg_edge_pct', 0),
+        }
+    if HAS_CROSS_CITY and _cross_city:
+        s = _cross_city.get_stats()
+        agents['cross_city'] = {
+            'active': True, 'propagations': s.get('total_propagations', 0),
+            'trades': s.get('trades_generated', 0),
+        }
+    if HAS_METAR_INTEL and _metar_intel:
+        s = _metar_intel.get_stats()
+        agents['metar_intel'] = {
+            'active': True, 'enrichments': s.get('total_enrichments', 0),
+            'cities_enriched': s.get('cities_enriched', 0),
+        }
+    if HAS_LAST_MILE and _last_mile:
+        s = _last_mile.get_stats()
+        agents['last_mile'] = {
+            'active': True, 'adjustments': s.get('total_adjustments', 0),
+            'avg_multiplier': s.get('avg_multiplier', 1.0),
+            'exit_recs': s.get('exit_recommendations', 0),
+        }
+    if HAS_LIQUIDITY and _liquidity_timer:
+        s = _liquidity_timer.get_stats()
+        agents['liquidity_timer'] = {
+            'active': True, 'current_mult': _liquidity_timer.get_current_multiplier(),
+            'fills_tracked': s.get('fills_tracked', 0),
+        }
+    if HAS_HEDGE and _hedge_mgr:
+        s = _hedge_mgr.get_stats()
+        agents['hedge_manager'] = {
+            'active': True, 'hedges_placed': s.get('hedges_placed', 0),
+            'boundaries_detected': s.get('boundaries_detected', 0),
         }
     if RUFLO_AVAILABLE:
         agents['ruflo'] = {
