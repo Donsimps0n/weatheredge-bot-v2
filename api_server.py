@@ -1936,32 +1936,84 @@ def _start_position_monitor():
             if not ACTIVE_TRADER_AVAILABLE or not _auto_trade_active:
                 continue
             try:
-                live_trades = [t for t in _trade_log if isinstance(t, dict) and t.get("mode") == "LIVE"]
-                if not live_trades:
+                # Monitor ALL trades (PAPER + LIVE) so paper mode behaves like real trading
+                open_trades = [t for t in _trade_log if isinstance(t, dict) and t.get("mode") in ("LIVE", "PAPER") and not t.get("exited")]
+                if not open_trades:
                     continue
                 now_utc = datetime.now(timezone.utc)
                 positions = []
-                for t in live_trades[-50:]:
+                for t in open_trades[-50:]:
                     city = t.get("city", "")
                     entry_price = t.get("price", 0.5)
                     entry_cost = entry_price * t.get("size", 1)
                     threshold = t.get("threshold", 0) or 0
+                    token_id = t.get("token_id", "")
+                    # Fetch LIVE current price from CLOB order book
+                    current_price = entry_price  # fallback
+                    if HAS_CLOB_BOOK and token_id:
+                        try:
+                            _book = clob_book.get_book(token_id)
+                            if _book and _book.get("bids"):
+                                # Best bid = what we could sell for right now
+                                current_price = float(_book["bids"][0]["price"])
+                        except Exception:
+                            pass
+                    current_value = current_price * t.get("size", 1)
+                    # Estimate minutes to resolution from trade timestamp
+                    trade_ts = t.get("timestamp", time.time())
+                    age_min = (time.time() - trade_ts) / 60.0
+                    est_resolution_min = max(0, 1440 - age_min)  # ~24h markets
                     positions.append({
                         "city": city,
                         "bin_lo": threshold - 1,
                         "bin_hi": threshold + 1,
                         "entry_price": entry_price,
-                        "current_price": entry_price,
+                        "current_price": current_price,
                         "entry_cost": entry_cost,
-                        "current_value": entry_cost,
-                        "mins_to_resolution": 480,
-                        "token_id": t.get("token_id", ""),
+                        "current_value": current_value,
+                        "mins_to_resolution": est_resolution_min,
+                        "token_id": token_id,
+                        "_trade_ref": t,  # reference back so we can mark exited
                     })
                 exit_actions = run_position_monitor(positions)
                 for action in exit_actions:
                     logger.warning("POSITION_MONITOR EXIT: %s | %s | %s",
                                    action.get("city"), action.get("action"), action.get("reason"))
-                    if _clob_client and action.get("action") in ("SELL_ALL", "SELL_HALF"):
+                    # Mark the trade as exited so we don't keep re-evaluating it
+                    _tref = action.get("_trade_ref")
+                    if _tref and isinstance(_tref, dict):
+                        _tref["exited"] = True
+                        _tref["exit_reason"] = action.get("reason", "")
+                        _tref["exit_action"] = action.get("action", "")
+                        _tref["exit_price"] = action.get("current_price", 0)
+                        _tref["exit_ts"] = time.time()
+                    is_paper = _tref and _tref.get("mode") == "PAPER" if _tref else False
+                    if is_paper:
+                        # Paper mode: log the simulated exit + record in ledger
+                        _exit_price = action.get("current_price", 0)
+                        _entry_price = _tref.get("price", 0) if _tref else 0
+                        _size = _tref.get("size", 1) if _tref else 1
+                        _pnl = round((_exit_price - _entry_price) * _size, 4)
+                        logger.info("PAPER EXIT: %s | %s | entry=%.3f exit=%.3f size=%.0f pnl=%.4f | %s",
+                                    action.get("city"), action.get("action"),
+                                    _entry_price, _exit_price, _size, _pnl, action.get("reason"))
+                        if HAS_LEDGER:
+                            try:
+                                trade_ledger.record_trade({
+                                    'ts': datetime.now(timezone.utc).isoformat(),
+                                    'question': f"EXIT: {action.get('city', '')} | {action.get('reason', '')}",
+                                    'city': action.get("city", ""),
+                                    'signal': f"EXIT_{action.get('action', 'SELL')}",
+                                    'token_id': action.get("token_id", "")[:16],
+                                    'price': _exit_price, 'size': _size,
+                                    'ev': 0, 'ev_dollar': 0,
+                                    'our_prob': 0, 'mkt_price': round(_exit_price * 100, 1),
+                                    'mode': 'PAPER',
+                                })
+                            except Exception:
+                                pass
+                    elif _clob_client and action.get("action") in ("SELL_ALL", "SELL_HALF"):
+                        # LIVE mode: actually execute the sell
                         try:
                             from py_clob_client.order_builder.constants import SELL as _SELL_SIDE
                             from py_clob_client.clob_types import OrderArgs

@@ -144,7 +144,9 @@ def run_position_monitor(positions, get_market_price_fn=None):
                 'market': pos.get('market', city),
                 'action': action,
                 'reason': reason,
-                'city': city
+                'city': city,
+                'current_price': pos.get('current_price', 0),
+                '_trade_ref': pos.get('_trade_ref'),
             })
         else:
             log.info('HOLD: %s | %s', city, reason)
