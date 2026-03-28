@@ -1439,6 +1439,31 @@ _auto_trade_config = {
 _paper_trades = []
 _traded_tokens = set()
 _trade_cycle_log = []  # Cycle log for /api/trade-debug monitoring
+
+# ── Load unresolved trades from ledger so exit engine survives restarts ──
+if HAS_LEDGER:
+    try:
+        _ledger_open = trade_ledger.get_unresolved_trades()
+        for _lt in _ledger_open:
+            _paper_trades.append({
+                'token_id': _lt.get('token_id', ''),
+                'ts': _lt.get('ts', ''),
+                'question': _lt.get('question', ''),
+                'signal': _lt.get('signal', ''),
+                'price': _lt.get('price', 0),
+                'size': _lt.get('size', 0),
+                'ev': _lt.get('ev', 0),
+                'our_prob': _lt.get('our_prob', 0),
+                'city': _lt.get('city', ''),
+                'mode': 'PAPER',
+                'source': 'ledger_reload',
+            })
+            if _lt.get('token_id'):
+                _traded_tokens.add(_lt['token_id'])
+        if _paper_trades:
+            logger.info("LEDGER_RELOAD: loaded %d unresolved trades from ledger into exit engine", len(_paper_trades))
+    except Exception as _lr_err:
+        logger.warning("LEDGER_RELOAD failed: %s", _lr_err)
 _city_day_exposure = {}  # {("city", "YYYY-MM-DD"): total_usd} — exposure cap tracking
 _city_day_hedge_exposure = {}  # {("city", "YYYY-MM-DD"): hedge_usd} — hedge sub-cap
 _MAX_CITY_DAY_EXPOSURE = 50  # Max $50 deployed per city per day

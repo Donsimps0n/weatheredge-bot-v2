@@ -327,6 +327,10 @@ class RiskCutter:
         (99.0, 0.50, 0.25),   # >12 hrs: cut if lost >50% AND P(win)<25%
     ]
 
+    # HARD KILL: unconditional exit at -60% regardless of P(win) or time
+    # No position should ever sit at -95%. This is the ultimate safety net.
+    HARD_DRAWDOWN_KILL = 0.60  # 60% loss = immediate sell, no questions asked
+
     # Rapid decay threshold
     RAPID_DECAY_THRESHOLD = 5.0  # price_cents * hours_remaining
 
@@ -456,6 +460,23 @@ class RiskCutter:
             # Fallback P(win) from market price
             if p_win is None:
                 p_win = current / 100.0
+
+            # ─── Check 0: HARD DRAWDOWN KILL — unconditional ───
+            # No position should ever sit at -95%. Kill at -60% regardless of P(win) or time.
+            if loss_pct >= self.HARD_DRAWDOWN_KILL:
+                self._cut_signals.append({
+                    'token_id': tid, 'action': 'SELL', 'reason': 'hard_drawdown_kill',
+                    'sell_fraction': 1.0, 'sell_size': pos['size'],
+                    'entry_price': entry, 'current_price': current,
+                    'loss_pct': round(loss_pct * 100, 1),
+                    'p_win': round(p_win, 3) if p_win else 0,
+                    'city': city, 'bin': pos.get('bin', ''),
+                    'urgency': 'critical',
+                })
+                self._stats['loss_limit_cuts'] += 1
+                log.warning("HARD_KILL: %s | -%d%% loss | entry=%.1fc curr=%.1fc | P(win)=%.1f%%",
+                            city, loss_pct * 100, entry, current, (p_win or 0) * 100)
+                continue
 
             # ─── Check 1: Rapid decay ───
             rapid_score = current * hours_to_resolution
