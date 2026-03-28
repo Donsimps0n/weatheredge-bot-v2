@@ -24,6 +24,7 @@ _conn: Optional[sqlite3.Connection] = None
 def _get_conn() -> sqlite3.Connection:
     global _conn
     if _conn is None:
+        log.info("Trade ledger DB: %s", DB_PATH)
         _conn = sqlite3.connect(DB_PATH, check_same_thread=False)
         _conn.row_factory = sqlite3.Row
         _init_tables(_conn)

@@ -2073,6 +2073,19 @@ def api_ledger_performance():
         return jsonify({"ok": False, "error": str(e)}), 500
 
 
+@app.route("/api/ledger/info")
+def api_ledger_info():
+    """Show which DB path the ledger is using — confirms persistent volume is active."""
+    import os
+    db_path = getattr(trade_ledger, 'DB_PATH', 'unknown') if HAS_LEDGER else 'ledger not loaded'
+    data_dir_exists = os.path.isdir("/data")
+    return jsonify({
+        "ok": True,
+        "db_path": db_path,
+        "persistent": db_path.startswith("/data"),
+        "data_dir_exists": data_dir_exists,
+    })
+
 @app.route("/api/ledger/unresolved")
 def api_ledger_unresolved():
     """Trades awaiting resolution."""
