@@ -85,6 +85,50 @@ except ImportError:
     RUFLO_AVAILABLE = False
     logger.warning("ruflo_monitor not available - running without Ruflo agents")
 
+# New agents: Station Bias Tracker, Bin Sniper, GFS Refresh
+HAS_STATION_BIAS = False
+HAS_BIN_SNIPER = False
+HAS_GFS_REFRESH = False
+_bin_sniper = None
+_gfs_refresh = None
+
+try:
+    import station_bias
+    HAS_STATION_BIAS = True
+    logger.info("Station bias tracker loaded (DB: %s)", station_bias.DB_PATH)
+except ImportError:
+    logger.warning("station_bias not available")
+
+try:
+    from bin_sniper import BinSniper
+    _bin_sniper = BinSniper(
+        shared_state=_ruflo_shared if RUFLO_AVAILABLE else None,
+        poll_interval_s=150,  # 2.5 minutes
+    )
+    HAS_BIN_SNIPER = True
+    logger.info("Bin Sniper agent loaded")
+except ImportError:
+    logger.warning("bin_sniper not available")
+
+try:
+    from gfs_refresh import GFSRefreshAgent
+    _gfs_refresh = GFSRefreshAgent(
+        shared_state=_ruflo_shared if RUFLO_AVAILABLE else None,
+    )
+    HAS_GFS_REFRESH = True
+    logger.info("GFS Refresh agent loaded")
+except ImportError:
+    logger.warning("gfs_refresh not available")
+
+# Register new agents in shared state
+if RUFLO_AVAILABLE:
+    if HAS_STATION_BIAS:
+        _ruflo_shared.register_agent('station_bias', 'Per-station temperature bias tracking + correction')
+    if HAS_BIN_SNIPER:
+        _ruflo_shared.register_agent('bin_sniper', 'New market detection + bias-corrected snipe trading')
+    if HAS_GFS_REFRESH:
+        _ruflo_shared.register_agent('gfs_refresh', 'GFS model update detection + delta repricing')
+
 app = Flask(__name__)
 CORS(app, origins=[
     "https://iamweather.vercel.app",
@@ -1366,6 +1410,33 @@ def _run_auto_trade_cycle():
                 _ruflo_accuracy.log_predictions(sigs, _ruflo_sentinel)
                 if _ruflo_accuracy.needs_resolution_check():
                     _ruflo_accuracy.check_resolutions()
+                    # Feed resolved markets to station bias tracker for learning
+                    if HAS_STATION_BIAS:
+                        try:
+                            for _pred in _ruflo_accuracy._predictions:
+                                _cid = _pred.get('condition_id', '')
+                                if _cid in _ruflo_accuracy._resolutions:
+                                    _res = _ruflo_accuracy._resolutions[_cid]
+                                    _st = _pred.get('station', '')
+                                    _fc = _pred.get('forecast')
+                                    if _st and _fc is not None:
+                                        _thresh = _pred.get('threshold', 0)
+                                        if _thresh:
+                                            station_bias.learn_from_resolution(
+                                                station=_st,
+                                                city=_pred.get('city', ''),
+                                                date=_pred.get('date', ''),
+                                                bin_question=_pred.get('question', ''),
+                                                bin_lo_f=_thresh - 1,
+                                                bin_hi_f=_thresh + 1,
+                                                outcome=_res.get('outcome', 'NO'),
+                                                our_prob=_pred.get('our_prob', 0),
+                                                market_price=_pred.get('market_price', 0),
+                                                forecast_temp_f=_fc,
+                                                sentinel_temp_f=_pred.get('sentinel_temp_f'),
+                                            )
+                        except Exception as _bias_learn_err:
+                            logger.debug("Bias learning from resolutions failed: %s", _bias_learn_err)
                 _ruflo_coordinator.report_agent_status('accuracy_tracker', True)
                 # AccuracyTracker -> SharedState
                 try:
@@ -1474,6 +1545,54 @@ def _run_auto_trade_cycle():
             except Exception as e:
                 logger.warning("Coordinator evaluate failed: %s", e)
                 _ruflo_coordinator.report_agent_status('coordinator', False, e)
+
+        # ── Agent 13: Station Bias → SharedState ──────────────────────
+        if HAS_STATION_BIAS and RUFLO_AVAILABLE:
+            try:
+                station_bias.publish_to_shared_state(_ruflo_shared)
+            except Exception as _bias_err:
+                logger.debug("Station bias publish failed: %s", _bias_err)
+
+        # ── Agent 14: Bin Sniper — detect new markets, snipe mispriced bins ──
+        _snipe_trades = []
+        if HAS_BIN_SNIPER and _bin_sniper and _bin_sniper.needs_poll():
+            try:
+                _raw_markets = _state.get("markets_cache", [])
+                _snipe_trades = _bin_sniper.poll_and_snipe(
+                    all_markets=_raw_markets,
+                    all_signals=sigs,
+                    bias_module=station_bias if HAS_STATION_BIAS else None,
+                    sentinel=_ruflo_sentinel if RUFLO_AVAILABLE else None,
+                )
+                if _snipe_trades:
+                    logger.info("BIN_SNIPER: %d snipe opportunities found", len(_snipe_trades))
+            except Exception as _snipe_err:
+                logger.error("BIN_SNIPER error: %s", _snipe_err)
+
+        # ── Agent 15: GFS Refresh — reprice on model updates ─────────
+        _gfs_delta_trades = []
+        if HAS_GFS_REFRESH and _gfs_refresh:
+            try:
+                if _gfs_refresh.needs_check():
+                    import gamma_client as _gc_module
+                    _gfs_refresh.check_and_refresh(
+                        all_markets=_state.get("markets_cache", []),
+                        all_signals=sigs,
+                        gamma_client_module=_gc_module,
+                        bias_module=station_bias if HAS_STATION_BIAS else None,
+                        sentinel=_ruflo_sentinel if RUFLO_AVAILABLE else None,
+                    )
+                    # After cache invalidation, the NEXT cycle will have fresh data.
+                    # But we can also try to process post-refresh with current signals:
+                    _gfs_delta_trades = _gfs_refresh.process_post_refresh(
+                        new_signals=sigs,
+                        bias_module=station_bias if HAS_STATION_BIAS else None,
+                        sentinel=_ruflo_sentinel if RUFLO_AVAILABLE else None,
+                    )
+                    if _gfs_delta_trades:
+                        logger.info("GFS_REFRESH: %d delta trades from forecast shift", len(_gfs_delta_trades))
+            except Exception as _gfs_err:
+                logger.error("GFS_REFRESH error: %s", _gfs_err)
 
         # SharedState: record cycle completion
         if RUFLO_AVAILABLE:
@@ -1804,8 +1923,81 @@ def _run_auto_trade_cycle():
             except Exception as _yh_err:
                 logger.error("RUFLO_YES_HARVEST scan error: %s", _yh_err)
 
+        # ── Agent 14+15: Execute Sniper + GFS Delta trades ──────────────
+        _combined_agent_trades = _snipe_trades + _gfs_delta_trades
+        if _combined_agent_trades:
+            _agent_traded = 0
+            for _at in _combined_agent_trades:
+                if _agent_traded >= 8:
+                    break
+                _at_tok = _at.get('token_id', '')
+                if not _at_tok or _at_tok in _traded_tokens:
+                    continue
+                _at_px = _at.get('price', 0)
+                _at_sz = _at.get('size', 1)
+                _at_city = _at.get('city', '')
+                _at_sig = _at.get('signal', 'SNIPE')
+                _at_edge = _at.get('edge_pct', 0)
+                _at_oprob = _at.get('our_prob', 0)
+                _at_corr = _at.get('corrected_prob', _at_oprob)
+                _at_bias = _at.get('bias_correction_f', 0)
+                if cfg.get('paper_mode', True):
+                    _at_trade = {
+                        'token_id': _at_tok,
+                        'ts': datetime.now(timezone.utc).isoformat(),
+                        'question': _at.get('question', f"{_at_sig}: {_at_city}")[:80],
+                        'signal': _at_sig,
+                        'price': _at_px,
+                        'size': _at_sz,
+                        'ev': _at_edge,
+                        'our_prob': _at_oprob,
+                        'corrected_prob': _at_corr,
+                        'bias_correction_f': _at_bias,
+                        'city': _at_city,
+                        'mode': 'PAPER',
+                        'source': _at.get('source', 'agent'),
+                        'timestamp': time.time(),
+                    }
+                    _paper_trades.append(_at_trade)
+                    _trade_log.append(_at_trade)
+                    logger.info("%s PAPER: %s | %s @ %.3f x %.0f | edge=%.1f%% | bias=%+.1f°F | prob=%.1f%%->%.1f%%",
+                                _at_sig, _at_city, _at.get('question','')[:40], _at_px, _at_sz,
+                                _at_edge, _at_bias, _at_oprob, _at_corr)
+                    if HAS_LEDGER:
+                        try:
+                            trade_ledger.record_trade({
+                                'ts': datetime.now(timezone.utc).isoformat(),
+                                'question': _at.get('question', '')[:80],
+                                'city': _at_city, 'signal': _at_sig,
+                                'token_id': _at_tok, 'price': _at_px, 'size': _at_sz,
+                                'ev': _at_edge, 'ev_dollar': _at.get('ev', 0),
+                                'our_prob': _at_oprob, 'mkt_price': _at.get('market_price', 0),
+                                'mode': 'PAPER',
+                            })
+                        except Exception:
+                            pass
+                else:
+                    if _clob_client:
+                        try:
+                            from py_clob_client.order_builder.constants import BUY
+                            from py_clob_client.clob_types import OrderArgs
+                            _at_order = _clob_client.create_and_post_order(OrderArgs(
+                                price=_at_px, size=_at_sz, side=BUY, token_id=_at_tok
+                            ))
+                            _trade_log.append({"signal": _at_sig, "city": _at_city, "price": _at_px,
+                                               "size": _at_sz, "ev": _at_edge, "mode": "LIVE",
+                                               "source": _at.get('source', 'agent'), "timestamp": time.time()})
+                            logger.info("%s LIVE: %s @ %.3f x %.0f | edge=%.1f%% | order=%s",
+                                        _at_sig, _at_city, _at_px, _at_sz, _at_edge, str(_at_order)[:80])
+                        except Exception as _at_err:
+                            logger.error("%s order error %s: %s", _at_sig, _at_city, _at_err)
+                _traded_tokens.add(_at_tok)
+                _agent_traded += 1
+                traded += 1
+            if _agent_traded:
+                logger.info("SNIPER+GFS: executed %d agent trades this cycle", _agent_traded)
 
-        # ÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂ Agent 11 & 12: Exit Strategy (ProfitTaker + RiskCutter) ÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂ
+        #ÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂ Agent 11 & 12: Exit Strategy (ProfitTaker + RiskCutter) ÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂ
         if RUFLO_AVAILABLE and _paper_trades:
             try:
                 # Register any new BUY positions with ProfitTaker
@@ -1951,6 +2143,13 @@ def start_bot():
     if "max_trades_per_cycle" in data:
         _auto_trade_config["max_trades_per_cycle"] = int(data["max_trades_per_cycle"])
     _auto_trade_active = True
+    # Seed Bin Sniper with existing markets so it only snipes NEW ones
+    if HAS_BIN_SNIPER and _bin_sniper and HAS_GAMMA:
+        try:
+            _seed_markets = _gamma_get_markets()
+            _bin_sniper.seed_known_markets(_seed_markets)
+        except Exception as _seed_err:
+            logger.warning("BinSniper seed failed: %s", _seed_err)
     # Run first cycle immediately
     import threading
     threading.Thread(target=_run_auto_trade_cycle, daemon=True).start()
@@ -2342,6 +2541,78 @@ def _warm_weather_cache():
         logger.info("Weather cache warmed: %d cities", len(_results))
     except Exception as e:
         logger.warning("Weather cache warmup failed: %s", e)
+
+# ── API endpoints for new agents ──────────────────────────────────
+
+@app.route("/api/agents/sniper")
+def api_sniper_stats():
+    """Bin Sniper agent stats and recent snipe history."""
+    if not HAS_BIN_SNIPER or not _bin_sniper:
+        return jsonify({"ok": False, "error": "Bin Sniper not available"}), 503
+    return jsonify({"ok": True, **_bin_sniper.get_stats()})
+
+@app.route("/api/agents/gfs")
+def api_gfs_stats():
+    """GFS Refresh agent stats and recent delta trades."""
+    if not HAS_GFS_REFRESH or not _gfs_refresh:
+        return jsonify({"ok": False, "error": "GFS Refresh not available"}), 503
+    return jsonify({"ok": True, **_gfs_refresh.get_stats()})
+
+@app.route("/api/agents/bias")
+def api_bias_stats():
+    """Station bias data for all tracked stations."""
+    if not HAS_STATION_BIAS:
+        return jsonify({"ok": False, "error": "Station bias tracker not available"}), 503
+    biases = station_bias.get_all_biases()
+    return jsonify({
+        "ok": True,
+        "stations_tracked": len(biases),
+        "biases": biases,
+    })
+
+@app.route("/api/agents/bias/<station>")
+def api_bias_station(station):
+    """Station bias detail for a specific ICAO station."""
+    if not HAS_STATION_BIAS:
+        return jsonify({"ok": False, "error": "Station bias tracker not available"}), 503
+    bias = station_bias.get_station_bias(station.upper())
+    return jsonify({"ok": True, **bias})
+
+@app.route("/api/agents/overview")
+def api_agents_overview():
+    """Overview of all agent statuses including new ones."""
+    agents = {}
+    if HAS_BIN_SNIPER and _bin_sniper:
+        s = _bin_sniper.get_stats()
+        agents['bin_sniper'] = {
+            'active': True, 'polls': s.get('total_polls', 0),
+            'new_markets': s.get('new_markets_found', 0),
+            'snipes': s.get('snipes_attempted', 0),
+            'known_markets': s.get('known_market_count', 0),
+        }
+    if HAS_GFS_REFRESH and _gfs_refresh:
+        s = _gfs_refresh.get_stats()
+        agents['gfs_refresh'] = {
+            'active': True, 'checks': s.get('total_checks', 0),
+            'updates_detected': s.get('updates_detected', 0),
+            'delta_trades': s.get('delta_trades', 0),
+            'next_run': s.get('next_expected_run', ''),
+        }
+    if HAS_STATION_BIAS:
+        biases = station_bias.get_all_biases()
+        sig = {k: v for k, v in biases.items() if abs(v.get('correction_f', 0)) >= 1.0}
+        agents['station_bias'] = {
+            'active': True, 'stations_tracked': len(biases),
+            'significant_biases': len(sig),
+        }
+    if RUFLO_AVAILABLE:
+        agents['ruflo'] = {
+            'active': True,
+            'agents': list(_ruflo_shared.get_agent_directory().keys()),
+            'cycle_count': _ruflo_shared._memory.get('cycle_count', 0),
+        }
+    return jsonify({"ok": True, "agents": agents})
+
 
 _warm_weather_cache()
 _start_auto_trade_timer()
