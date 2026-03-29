@@ -1029,6 +1029,17 @@ _CITY_SIGMA: dict = {
     "__default__":    (2.5, 1.8),
 }
 
+# ── Per-city forecast bias correction (°C) ────────────────────────────────
+# Source: 81-market backtest, March 2026.
+# Open-Meteo archive vs Wunderground airport station (Polymarket truth).
+# Positive bias = OM overestimates → subtract from ftemp before computing bins.
+#   LA KLAX:  +2.1°F = +1.17°C — OM consistently reads high vs KLAX readings
+#   All others: <1.5°F bias — within noise, no correction applied
+_CITY_BIAS_C: dict = {
+    "los angeles": 1.17,   # subtract 1.17°C from OM forecast for LA (backtest n=5)
+    # Others near-zero — will update as more data accumulates
+}
+
 def _city_sigma(city_name: str, is_tomorrow: bool) -> float:
     """Return calibrated sigma (°C) for a city based on historical volatility."""
     key = city_name.lower().strip()
@@ -1104,6 +1115,11 @@ def _build_signals(weather_markets, weather_cities):
                     logger.info("NWS obs anchor: city=%s obs=%.1fF max=%.1fF adj_ftemp=%.2fC", p["city"], _obs_f, _max_f, ftemp)
             except Exception as _obs_err:
                 logger.debug("NWS obs anchor failed for %s: %s", p["city"], _obs_err)
+        # Apply per-city bias correction (Open-Meteo vs Wunderground backtest)
+        _bias_c = _CITY_BIAS_C.get(p["city"].lower(), 0.0)
+        if _bias_c != 0.0:
+            ftemp -= _bias_c
+            logger.debug("Bias correction: city=%s adj=%.2fC -> ftemp=%.2fC", p["city"], _bias_c, ftemp)
         if p["direction"] == "exact":
             # Exact temp: probability of landing within +/- 0.5C of threshold
             z_hi = (p["threshold_c"] + 0.5 - ftemp) / sigma
