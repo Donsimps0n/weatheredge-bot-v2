@@ -1072,7 +1072,7 @@ def _build_signals(weather_markets, weather_cities):
                     _max_c = (_max_f - 32) * 5.0 / 9.0
                     # Blend NWS obs anchor with model forecast
                     ftemp = _obs_c * 0.4 + min(_max_c, ftemp) * 0.6
-                    sigma = max(0.8, sigma * 0.7)
+                    sigma = max(1.5, sigma * 0.7)  # Floor at 1.5°C — prevents single-bin 99.9% collapse
                     logger.info("NWS obs anchor: city=%s obs=%.1fF max=%.1fF adj_ftemp=%.2fC", p["city"], _obs_f, _max_f, ftemp)
             except Exception as _obs_err:
                 logger.debug("NWS obs anchor failed for %s: %s", p["city"], _obs_err)
@@ -1125,6 +1125,43 @@ def _build_signals(weather_markets, weather_cities):
             "condition_id": mkt.get("condition_id", ""),
             "tokens": mkt.get("tokens", []),
         })
+    # ── Post-process: normalize exact bin probabilities per city+date group ──
+    # Each bin was computed independently with a Normal CDF slice.  When sigma
+    # is tight (obs-anchored), one bin can absorb 99.9% of mass even though the
+    # market's whole distribution must sum to 100%.  Group all "exact" bins for
+    # the same city+end_date and re-weight so they form a proper distribution.
+    _exact_groups: dict = {}
+    for _si, _sig in enumerate(signals):
+        if _sig.get('direction') == 'exact':
+            _gk = (_sig['city'], _sig.get('end_date', ''))
+            _exact_groups.setdefault(_gk, []).append(_si)
+
+    for _gk, _idxs in _exact_groups.items():
+        if len(_idxs) < 2:
+            continue  # single bin — nothing to normalize against
+        _raw = [signals[i]['our_prob'] for i in _idxs]
+        _tot = sum(_raw)
+        if _tot <= 0:
+            continue
+        for _ii, _idx in enumerate(_idxs):
+            _norm = round(_raw[_ii] / _tot * 100.0, 1)
+            _norm = max(0.1, min(99.9, _norm))
+            # Shrinkage: if model > 3× market, pull toward market price
+            _mp = signals[_idx]['market_price']
+            if _mp > 0 and _norm > 3.0 * _mp:
+                _norm = round(min(_norm, 2.0 * _mp + 10.0), 1)
+            _ev = round(_norm - _mp, 1)
+            _p2 = _norm / 100.0
+            _P2 = max(0.01, _mp / 100.0)
+            _evd = round((_p2 - _P2) / _P2 * 100.0, 1)
+            _kl = round(max(0, (_norm / 100 * (100 / max(0.1, _mp)) - 1) /
+                           ((100 / max(0.1, _mp)) - 1) * 100), 1) if _mp > 0 else 0
+            _st = "SKIP" if abs(_ev) < 5 else ("BUY YES" if _ev > 0 else "BUY NO")
+            signals[_idx].update({
+                'our_prob': _norm, 'theo_ev': _ev, 'ev_dollar': _evd,
+                'kelly': _kl, 'signal': _st,
+            })
+
     # Rank by dollar EV (cost-aware edge), not raw probability edge
     signals.sort(key=lambda s: abs(s.get("ev_dollar", 0)), reverse=True)
     return signals
