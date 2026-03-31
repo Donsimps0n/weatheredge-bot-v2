@@ -102,8 +102,10 @@ class DiscoveredMarket:
 # Module-level cache
 # ---------------------------------------------------------------------------
 
-_cache_ts:      float             = 0.0
-_cache_markets: List[Dict]        = []
+_cache_ts:           float             = 0.0
+_cache_markets:      List[Dict]        = []
+_cache_last_success: Optional[str]     = None   # ISO-8601 UTC of last good fetch
+_cache_last_error:   Optional[str]     = None   # last error message
 
 
 # ---------------------------------------------------------------------------
@@ -417,12 +419,30 @@ def get_markets(tag: Optional[str] = "weather") -> List[Dict]:
         log.debug("get_markets: cache hit (age=%.0fs, n=%d)", age, len(_cache_markets))
         return _cache_markets
 
+    global _cache_last_success, _cache_last_error
     log.info("get_markets: refreshing from Gamma API (cache age=%.0fs)", age)
-    discovered = fetch_open_temp_markets(tag=tag)
-    _cache_markets = [as_cycle_dict(dm) for dm in discovered]
-    _cache_ts      = time.monotonic()
+    try:
+        discovered = fetch_open_temp_markets(tag=tag)
+        fresh = [as_cycle_dict(dm) for dm in discovered]
+    except Exception as exc:
+        fresh = []
+        _cache_last_error = str(exc)
+        log.error("get_markets: fetch exception: %s", exc)
 
-    log.info("get_markets: cached %d markets", len(_cache_markets))
+    if fresh:
+        _cache_markets = fresh
+        _cache_ts      = time.monotonic()
+        _cache_last_success = datetime.now(timezone.utc).isoformat()
+        _cache_last_error   = None
+        log.info("get_markets: cached %d markets", len(_cache_markets))
+    else:
+        # Stale-while-revalidate: NEVER overwrite good cache with empty list.
+        # Retry in 2 min instead of 30.
+        _cache_ts = time.monotonic() - CACHE_TTL_SECONDS + 120
+        log.warning(
+            "get_markets: refresh returned 0 markets — keeping stale cache "
+            "(%d) with 2-min retry backoff", len(_cache_markets)
+        )
     return _cache_markets
 
 

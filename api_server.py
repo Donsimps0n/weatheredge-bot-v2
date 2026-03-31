@@ -6,6 +6,7 @@ Lightweight Flask API that exposes bot data to the Vercel dashboard.
 import os
 import time
 import logging
+import secrets
 import subprocess
 from datetime import datetime, timezone, timedelta
 try:
@@ -19,6 +20,10 @@ logging.basicConfig(
 )
 logger = logging.getLogger("api_server")
 
+# ── Boot identity — changes on every restart ──
+BOOT_ID = secrets.token_hex(4)
+BOOT_TS = datetime.now(timezone.utc).isoformat()
+
 # ── Git commit hash for runtime traceability ──
 try:
     GIT_COMMIT = subprocess.check_output(
@@ -27,6 +32,8 @@ try:
     ).decode().strip()
 except Exception:
     GIT_COMMIT = "unknown"
+
+logger.warning("BOOT: id=%s git=%s ts=%s", BOOT_ID, GIT_COMMIT, BOOT_TS)
 
 # ── Per-city timezone lookup (for post-peak cutoff) ──
 _CITY_TZ = {}  # city_name_lower -> ZoneInfo
@@ -135,6 +142,18 @@ try:
     logger.info("Station bias tracker loaded (DB: %s)", station_bias.DB_PATH)
 except ImportError:
     logger.warning("station_bias not available")
+
+# ── Live Bias Agent — replaces hardcoded _CITY_BIAS_C ──
+_bias_agent = None
+HAS_BIAS_AGENT = False
+try:
+    from src.bias_agent import StationBiasAgent
+    from config import CITIES as _cfg_cities
+    _bias_agent = StationBiasAgent(config_cities=_cfg_cities)
+    HAS_BIAS_AGENT = True
+    logger.info("StationBiasAgent loaded: %d active corrections", _bias_agent._n_corrections_active)
+except Exception as _ba_err:
+    logger.warning("StationBiasAgent not available: %s", _ba_err)
 
 try:
     from bin_sniper import BinSniper
@@ -247,6 +266,7 @@ except ImportError:
 if RUFLO_AVAILABLE:
     if HAS_STATION_BIAS:
         _ruflo_shared.register_agent('station_bias', 'Per-station temperature bias tracking + correction')
+        _ruflo_shared.register_agent('bias_agent', 'Live bias corrections from station_bias.db (daily refresh)')
     if HAS_BIN_SNIPER:
         _ruflo_shared.register_agent('bin_sniper', 'New market detection + bias-corrected snipe trading')
     if HAS_GFS_REFRESH:
@@ -458,7 +478,54 @@ td{{padding:8px 12px;border-bottom:1px solid #1e293b0a;color:#cbd5e1}}
 
 @app.route("/api/health")
 def health():
-    return jsonify({"status": "ok", "uptime_s": int(time.time() - _boot), "commit": GIT_COMMIT})
+    # ── Gamma health ──
+    try:
+        import gamma_client as _gc
+        _gamma_cache_age = round(time.monotonic() - _gc._cache_ts, 0) if _gc._cache_ts else None
+        _gamma_info = {
+            "cached_markets": len(_gc._cache_markets),
+            "cache_age_s": _gamma_cache_age,
+            "last_success_utc": _gc._cache_last_success,
+            "last_error": _gc._cache_last_error,
+            "degraded": len(_gc._cache_markets) == 0,
+        }
+    except Exception:
+        _gamma_info = {"error": "unavailable"}
+
+    _health = {
+        "status": "ok",
+        "boot_id": BOOT_ID,
+        "boot_ts": BOOT_TS,
+        "uptime_s": int(time.time() - _boot),
+        "commit": GIT_COMMIT,
+        "gamma": _gamma_info,
+        "openmeteo": {
+            "cached_cities": len((_weather_cache.get("data") or {}).get("cities", [])),
+            "cache_age_s": round(time.time() - _weather_cache.get("ts", 0), 0) if _weather_cache.get("ts") else None,
+            "cooldown_active": time.time() < globals().get("_openmeteo_cooldown_until", 0),
+            "cooldown_remaining_s": max(0, round(globals().get("_openmeteo_cooldown_until", 0) - time.time(), 0)),
+            "count_429": globals().get("_openmeteo_429_count", 0),
+        },
+        "agents": {
+            "bias_agent": {
+                "active": HAS_BIAS_AGENT,
+                "n_stations": _bias_agent._n_corrections_active if _bias_agent else 0,
+                "n_stations_total": len(_bias_agent._station_meta) if _bias_agent else 0,
+                "n_drifting": sum(1 for d in (_bias_agent._drift_cache or {}).values()
+                                  if d.get("drifting")) if _bias_agent else 0,
+                "last_poll_ago_s": round(time.time() - _bias_agent._last_poll, 0)
+                                   if _bias_agent else None,
+                "last_poll_ok": _bias_agent._last_poll_ok if _bias_agent else False,
+                "last_error": _bias_agent._last_error if _bias_agent else "agent_init_failed",
+                "last_db_mtime": _bias_agent._last_db_mtime if _bias_agent else None,
+                "poll_count": _bias_agent._poll_count if _bias_agent else 0,
+            },
+        },
+    }
+    if not HAS_BIAS_AGENT:
+        _health["status"] = "degraded"
+        _health["degraded_reason"] = "bias_agent_unavailable"
+    return jsonify(_health)
 
 
 @app.route("/api/status")
@@ -576,6 +643,26 @@ def debug_gamma():
     
     return jsonify(results)
 
+
+@app.route("/api/debug/inject-markets", methods=["POST"])
+def debug_inject_markets():
+    """META_PROOF DEBUG: Inject test markets directly into weather_markets state.
+    Body: {"markets": [...list of weather market dicts...]}
+    Also injects tokens into _traded_tokens to trigger dedupe-bypass if 'add_to_traded' is provided.
+    """
+    global _traded_tokens
+    data = request.get_json(force=True) or {}
+    markets = data.get("markets", [])
+    _state["weather_markets"] = markets
+    _state["last_scan"] = datetime.now(timezone.utc).isoformat()
+    # Optionally add token_ids to _traded_tokens to trigger META_PROOF bypass
+    for tok in data.get("add_to_traded", []):
+        _traded_tokens.add(tok)
+    logger.warning("META_PROOF_INJECT: injected %d markets, traded_tokens now has %d entries",
+                   len(markets), len(_traded_tokens))
+    return jsonify({"ok": True, "markets_count": len(markets), "traded_tokens": len(_traded_tokens)})
+
+
 @app.route("/api/scan", methods=["GET", "POST"])
 def scan():
     """Fetch markets from Gamma, classify weather ones, cache results."""
@@ -612,6 +699,7 @@ def scan():
                 "prices": m.get("prices", {}),
                 "tokens": _tokens,
                 "confidence": m.get("confidence", 0),
+                "condition_id": m.get("market_id", m.get("condition_id", "")),
                 # Frontend-compatible edge fields (from tokens array)
                 "yes_price": _yes_p,
                 "no_price": _no_p,
@@ -926,6 +1014,27 @@ import math as _math
 import re as _re
 import random as _random
 
+# ── Ensemble forecast engine (replaces static-sigma Gaussian) ──
+_ENSEMBLE_AVAILABLE = False
+try:
+    import sys as _sys
+    _sys.path.insert(0, os.path.join(os.path.dirname(__file__), "src"))
+    from multi_model_forecast import get_ensemble_probability as _ensemble_prob
+    _ENSEMBLE_AVAILABLE = True
+    logger.info("Ensemble forecast engine loaded — real probabilities enabled")
+except ImportError as _ie:
+    logger.warning("Ensemble forecast engine not available: %s — falling back to static sigma", _ie)
+
+# ── Station-matched edge engine (obs + ensemble + physics) ──
+_STATION_EDGE_AVAILABLE = False
+try:
+    from station_edge import get_station_probability as _station_prob
+    from station_edge import evaluate_trade as _evaluate_trade
+    _STATION_EDGE_AVAILABLE = True
+    logger.info("Station edge engine loaded — obs+ensemble+physics enabled")
+except ImportError as _se_ie:
+    logger.warning("Station edge engine not available: %s", _se_ie)
+
 _signals_cache = {"data": None, "ts": 0}
 
 _CITY_COORDS = {
@@ -1013,31 +1122,74 @@ def _ncdf(x):
 # Values are in °C.  Higher std cities need wider sigma so bins stay
 # spread across the distribution instead of collapsing onto one bin.
 # Source: avg 7-day rolling std over last 60 days, converted F→C, scaled.
-#   Toronto CYYZ: 8.4°F std → 6.0°C tomorrow, 3.7°C today (very volatile)
-#   LA/Miami:     5.5°F std → 3.4°C tomorrow, 2.1°C today
-#   Others:       3.5-4.1°F → 2.3°C tomorrow, 1.5°C today
+# Sigma calibration source: v3 reliability report (2139 resolved markets, 38 cities)
+# Formula: sigma_tomorrow = max(rmse_f/1.8*1.2, std7_f/1.8*1.3, 1.5)
+# sigma_today ~ 0.65 * sigma_tomorrow (reduced uncertainty same-day)
 _CITY_SIGMA: dict = {
     # city_name_lower: (sigma_tomorrow_c, sigma_today_c)
-    "miami":          (3.4, 2.1),
-    "los angeles":    (3.4, 2.1),
-    "toronto":        (6.0, 3.7),   # ← extreme seasonal swings, must be wide
+    # ── US cities (RMSE-calibrated) ──
+    "miami":          (3.4, 2.1),   # RMSE 2.0F, std7 4.0F → keep 3.4
+    "los angeles":    (3.4, 2.1),   # low n, keep conservative
+    "seattle":        (2.3, 1.5),   # RMSE 1.9F — tight, keep
+    "chicago":        (2.8, 1.8),   # RMSE 3.4F → sig_floor 2.2, spring volatile
+    "atlanta":        (2.5, 1.6),   # RMSE 3.2F → sig_floor 2.1
+    "dallas":         (2.8, 1.8),   # RMSE 3.3F, outlier_rate 9.6% — wide
+    "new york":       (2.6, 1.7),   # RMSE 3.6F (n=425) → sig_floor 2.4
+    # ── Canada ──
+    "toronto":        (6.0, 3.7),   # extreme seasonal swings — must stay wide
+    # ── LATAM ──
+    "buenos aires":   (2.6, 1.7),   # RMSE 3.8F → sig_floor 2.5 (was 2.4)
     "mexico city":    (2.3, 1.5),
-    "buenos aires":   (2.4, 1.5),
-    "ankara":         (2.3, 1.5),
-    "seattle":        (2.3, 1.5),
-    # fallback for any city not listed:
+    # ── Europe ──
+    "london":         (1.8, 1.2),   # RMSE 2.1F (n=429) — tightest reliable data
+    "munich":         (1.8, 1.2),   # RMSE 1.9F (n=24)
+    "paris":          (1.8, 1.2),   # RMSE 2.1F (n=43)
+    "milan":          (2.4, 1.6),   # RMSE 3.3F (n=12, watch)
+    "warsaw":         (2.0, 1.3),   # RMSE 2.8F (n=12)
+    # ── Middle East ──
+    "ankara":         (2.3, 1.5),   # RMSE 2.5F (n=66), p95=5.0F — keep
+    "tel aviv":       (1.8, 1.2),   # RMSE 1.9F (n=19) — tight
+    # ── Asia ──
+    "singapore":      (1.5, 1.0),   # RMSE 1.1F (n=16) — most stable globally
+    "tokyo":          (1.8, 1.2),   # RMSE 1.6F (n=19)
+    "seoul":          (2.2, 1.5),   # RMSE 2.9F (n=113) — sig_floor 1.95
+    "shanghai":       (1.8, 1.2),   # RMSE 1.9F (n=16)
+    "taipei":         (4.0, 2.6),   # RMSE 5.4F, outlier_rate 25% — very wide
+    "hong kong":      (4.0, 2.6),   # RMSE 5.4F, outlier_rate 33% — very wide
+    # ── Oceania ──
+    "wellington":     (2.0, 1.3),   # RMSE 2.7F (n=66), p95=4.6F
+    # ── Global fallback ──
     "__default__":    (2.5, 1.8),
 }
 
 # ── Per-city forecast bias correction (°C) ────────────────────────────────
-# Source: 81-market backtest, March 2026.
-# Open-Meteo archive vs Wunderground airport station (Polymarket truth).
-# Positive bias = OM overestimates → subtract from ftemp before computing bins.
-#   LA KLAX:  +2.1°F = +1.17°C — OM consistently reads high vs KLAX readings
-#   All others: <1.5°F bias — within noise, no correction applied
+# Source: station_reliability_report_v3.xlsx — 2139 matched resolved markets
+# across 38 cities, Jan 2025 – Mar 2026. ERA5 vs Wunderground (Polymarket truth).
+#
+# Sign convention: positive _CITY_BIAS_C = OM overestimates WU → subtract.
+#   ftemp -= _CITY_BIAS_C[city]   (positive = reduce, negative = increase)
+#
+# Correction threshold: |bias_f| >= 2.0°F AND n_used >= 10.
+# Cities below threshold are monitored but not corrected yet.
+#
+# bias_f (°F) → bias_c (°C) = bias_f / 1.8, applied as negative (OM low → add)
+#
+# Corrected (|bias| >= 2.0F, n >= 10):
+#   Buenos Aires:  ERA5 −3.0F vs WU (n=113) → add +1.64°C
+#   New York:      ERA5 −2.1F vs WU (n=425) → add +1.19°C  ← strongest signal
+#   Wellington:    ERA5 −2.1F vs WU (n=66)  → add +1.18°C
+#   Los Angeles:   ERA5 +2.4F vs WU (n=7)   → subtract 1.17°C (small n, keep)
+#   Taipei:        ERA5 +2.1F vs WU (n=12)  → subtract 1.15°C (25% outlier rate)
+#
+# Monitoring (0.8F <= |bias| < 2.0F, n >= 10): Munich, Paris, Hong Kong, Milan,
+#   Chicago, Miami, Toronto, Sao Paulo, Shanghai, Tel Aviv, Seoul — correct when n>30
 _CITY_BIAS_C: dict = {
-    "los angeles": 1.17,   # subtract 1.17°C from OM forecast for LA (backtest n=5)
-    # Others near-zero — will update as more data accumulates
+    # Positive = OM overestimates (subtract from ftemp). Negative = OM underestimates (add).
+    "los angeles":   +1.17,  # ERA5 +2.1F high vs KLAX (n=7, direction stable)
+    "taipei":        +1.15,  # ERA5 +2.1F high (n=12, 25% outlier rate — apply carefully)
+    "buenos aires":  -1.64,  # ERA5 −3.0F low vs WU (n=113, strong signal)
+    "new york":      -1.19,  # ERA5 −2.1F low vs WU (n=425, highest confidence)
+    "wellington":    -1.18,  # ERA5 −2.1F low vs WU (n=66)
 }
 
 def _city_sigma(city_name: str, is_tomorrow: bool) -> float:
@@ -1085,53 +1237,85 @@ def _build_signals(weather_markets, weather_cities):
         if _dm:
             _qday = int(_dm.group(1))
             _is_tomorrow = _qday != _today.day
-        if wx:
-            # Use forecasted daily HIGH, not current temp
-            if _is_tomorrow and wx.get("temp_max_tomorrow") is not None:
-                ftemp = wx["temp_max_tomorrow"]
-                sigma = _city_sigma(p["city"], True)  # tomorrow: per-city calibrated sigmaÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂ°C uncertainty
-            elif wx.get("temp_max") is not None:
-                ftemp = wx["temp_max"]
-                sigma = _city_sigma(p["city"], False)  # today: per-city calibrated sigmaÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂ°C uncertainty
-            else:
-                ftemp = wx.get("temp", 20)
-                sigma = _city_sigma(p["city"], _is_tomorrow)
-        else:
-            ftemp = 20.0
-            sigma = _city_sigma(p["city"], _is_tomorrow)
-        # Anchor same-day forecast with real NWS observation if available
-        if not _is_tomorrow and ACTIVE_TRADER_AVAILABLE:
+        # ── PRIMARY: Ensemble-based probability (82 members + 7 models) ──
+        _used_ensemble = False
+        _ens_fc = None
+        _bias_c = _bias_agent.get_correction_c(p["city"]) if HAS_BIAS_AGENT else _CITY_BIAS_C.get(p["city"].lower(), 0.0)
+        if _ENSEMBLE_AVAILABLE:
             try:
-                import active_trader as _at
-                _obs_f = _at.get_obs_temp_f(p["city"])
-                if _obs_f is not None:
-                    _obs_c = (_obs_f - 32) * 5.0 / 9.0
-                    _now_hour = (datetime.now(timezone.utc).hour - 5) % 24
-                    _max_f = _at.max_achievable_today(_obs_f, _now_hour)
-                    _max_c = (_max_f - 32) * 5.0 / 9.0
-                    # Blend NWS obs anchor with model forecast
-                    ftemp = _obs_c * 0.4 + min(_max_c, ftemp) * 0.6
-                    sigma = max(_city_sigma(p["city"], False), sigma * 0.7)  # Floor at city minimum — prevents collapse
-                    logger.info("NWS obs anchor: city=%s obs=%.1fF max=%.1fF adj_ftemp=%.2fC", p["city"], _obs_f, _max_f, ftemp)
-            except Exception as _obs_err:
-                logger.debug("NWS obs anchor failed for %s: %s", p["city"], _obs_err)
-        # Apply per-city bias correction (Open-Meteo vs Wunderground backtest)
-        _bias_c = _CITY_BIAS_C.get(p["city"].lower(), 0.0)
-        if _bias_c != 0.0:
-            ftemp -= _bias_c
-            logger.debug("Bias correction: city=%s adj=%.2fC -> ftemp=%.2fC", p["city"], _bias_c, ftemp)
-        if p["direction"] == "exact":
-            # Exact temp: probability of landing within +/- 0.5C of threshold
-            z_hi = (p["threshold_c"] + 0.5 - ftemp) / sigma
-            z_lo = (p["threshold_c"] - 0.5 - ftemp) / sigma
-            our_prob = round((_ncdf(z_hi) - _ncdf(z_lo)) * 100, 1)
-        elif p["direction"] == "above":
-            z = (ftemp - p["threshold_c"]) / sigma
-            our_prob = round(_ncdf(z) * 100, 1)
-        else:
-            z = (p["threshold_c"] - ftemp) / sigma
-            our_prob = round(_ncdf(z) * 100, 1)
-        our_prob = max(0.1, min(99.9, our_prob))
+                _coords = _CITY_COORDS.get(p["city"].lower())
+                if _coords:
+                    _ens_prob, _ens_fc = _ensemble_prob(
+                        city=p["city"],
+                        lat=_coords[0], lon=_coords[1],
+                        threshold_c=p["threshold_c"],
+                        direction=p["direction"],
+                        is_tomorrow=_is_tomorrow,
+                        timezone="auto",
+                        bias_correction_c=_bias_c,
+                    )
+                    our_prob = round(_ens_prob * 100, 1)
+                    our_prob = max(0.1, min(99.9, our_prob))
+                    # Extract ftemp for display (use ensemble mean)
+                    ftemp = _ens_fc.ensemble_mean if _ens_fc.n_ensemble_members > 0 else _ens_fc.multimodel_mean
+                    sigma = _ens_fc.blended_sigma
+                    _used_ensemble = True
+                    logger.debug(
+                        "ENSEMBLE prob: city=%s thresh=%.1fC dir=%s prob=%.1f%% "
+                        "members=%d models=%d sigma=%.2f quality=%s",
+                        p["city"], p["threshold_c"], p["direction"], our_prob,
+                        _ens_fc.n_ensemble_members, _ens_fc.n_models,
+                        _ens_fc.blended_sigma, _ens_fc.data_quality,
+                    )
+            except Exception as _ens_err:
+                logger.warning("Ensemble failed for %s, falling back to static sigma: %s", p["city"], _ens_err)
+
+        # ── FALLBACK: Static sigma Gaussian CDF (old method) ──
+        if not _used_ensemble:
+            if wx:
+                # Use forecasted daily HIGH, not current temp
+                if _is_tomorrow and wx.get("temp_max_tomorrow") is not None:
+                    ftemp = wx["temp_max_tomorrow"]
+                    sigma = _city_sigma(p["city"], True)
+                elif wx.get("temp_max") is not None:
+                    ftemp = wx["temp_max"]
+                    sigma = _city_sigma(p["city"], False)
+                else:
+                    ftemp = wx.get("temp", 20)
+                    sigma = _city_sigma(p["city"], _is_tomorrow)
+            else:
+                ftemp = 20.0
+                sigma = _city_sigma(p["city"], _is_tomorrow)
+            # Anchor same-day forecast with real NWS observation if available
+            if not _is_tomorrow and ACTIVE_TRADER_AVAILABLE:
+                try:
+                    import active_trader as _at
+                    _obs_f = _at.get_obs_temp_f(p["city"])
+                    if _obs_f is not None:
+                        _obs_c = (_obs_f - 32) * 5.0 / 9.0
+                        _now_hour = (datetime.now(timezone.utc).hour - 5) % 24
+                        _max_f = _at.max_achievable_today(_obs_f, _now_hour)
+                        _max_c = (_max_f - 32) * 5.0 / 9.0
+                        ftemp = _obs_c * 0.4 + min(_max_c, ftemp) * 0.6
+                        sigma = max(_city_sigma(p["city"], False), sigma * 0.7)
+                        logger.info("NWS obs anchor: city=%s obs=%.1fF max=%.1fF adj_ftemp=%.2fC", p["city"], _obs_f, _max_f, ftemp)
+                except Exception as _obs_err:
+                    logger.debug("NWS obs anchor failed for %s: %s", p["city"], _obs_err)
+            # Apply per-city bias correction
+            if _bias_c != 0.0:
+                ftemp -= _bias_c
+                logger.debug("Bias correction: city=%s adj=%.2fC -> ftemp=%.2fC", p["city"], _bias_c, ftemp)
+            if p["direction"] == "exact":
+                z_hi = (p["threshold_c"] + 0.5 - ftemp) / sigma
+                z_lo = (p["threshold_c"] - 0.5 - ftemp) / sigma
+                our_prob = round((_ncdf(z_hi) - _ncdf(z_lo)) * 100, 1)
+            elif p["direction"] == "above":
+                z = (ftemp - p["threshold_c"]) / sigma
+                our_prob = round(_ncdf(z) * 100, 1)
+            else:
+                z = (p["threshold_c"] - ftemp) / sigma
+                our_prob = round(_ncdf(z) * 100, 1)
+            our_prob = max(0.1, min(99.9, our_prob))
         # Use real market price from tokens
         _tkns = mkt.get('tokens', [])
         _yes_mp = 0
@@ -1153,6 +1337,36 @@ def _build_signals(weather_markets, weather_cities):
         conf = min(5, max(1, int(abs(ev) / 10) + 1))
         agreement = "STRONG" if abs(ev) > 20 else "MODERATE" if abs(ev) > 10 else "WEAK"
         sig_type = "SKIP" if abs(ev) < 5 else ("BUY YES" if ev > 0 else "BUY NO")
+        # ── Station edge overlay: refine with obs + physics ──
+        _se_data = {}
+        if _STATION_EDGE_AVAILABLE:
+            try:
+                _coords = _CITY_COORDS.get(p["city"].lower())
+                if _coords:
+                    _se = _station_prob(
+                        city=p["city"], lat=_coords[0], lon=_coords[1],
+                        threshold_c=p["threshold_c"], direction=p["direction"],
+                        is_tomorrow=_is_tomorrow, bias_correction_c=_bias_c,
+                    )
+                    # Override probability with station-matched estimate
+                    our_prob = round(_se.probability * 100, 1)
+                    our_prob = max(0.1, min(99.9, our_prob))
+                    ev = round(our_prob - mp, 1)
+                    _p = our_prob / 100.0
+                    ev_dollar = round((_p - _P) / _P * 100, 1)
+                    kelly = round(_se.recommended_size * 100, 1)
+                    conf = round(_se.confidence * 5, 0)  # scale 0-1 to 0-5
+                    sig_type = "SKIP" if abs(ev) < 8 else ("BUY YES" if ev > 0 else "BUY NO")
+                    _se_data = {
+                        "station_source": _se.source,
+                        "station_confidence": round(_se.confidence, 3),
+                        "obs_temp_f": _se.obs_temp_f,
+                        "obs_max_estimate_f": _se.obs_max_estimate_f,
+                        "blend_weight_obs": round(_se.blend_weight_obs, 2),
+                        "recommended_kelly": round(_se.recommended_size, 4),
+                    }
+            except Exception as _se_err:
+                logger.debug("Station edge failed for %s: %s", p["city"], _se_err)
         signals.append({
             "question": mkt.get("question", ""),
             "city": p["city"], "metric": p["metric"],
@@ -1161,7 +1375,13 @@ def _build_signals(weather_markets, weather_cities):
             "theo_ev": ev, "ev_dollar": ev_dollar, "forecast": df, "unit": unit,
             "ftemp_c": round(ftemp, 3), "threshold_c": p["threshold_c"],
             "threshold": p["threshold"], "sigma": round(sigma, 2),
-            "agreement": agreement, "models": ["GFS", "ECMWF", "UKMO", "MF"],
+            "agreement": agreement,
+            "models": list(_ens_fc.model_forecasts.keys()) if _ens_fc and _ens_fc.n_models > 0 else ["GFS", "ECMWF", "UKMO", "MF"],
+            "prob_source": "ensemble" if _used_ensemble else "static_sigma",
+            "ensemble_members": _ens_fc.n_ensemble_members if _ens_fc else 0,
+            "ensemble_spread": round(_ens_fc.ensemble_max - _ens_fc.ensemble_min, 1) if _ens_fc and _ens_fc.n_ensemble_members > 0 else 0,
+            "data_quality": _ens_fc.data_quality if _ens_fc else "fallback",
+            **_se_data,
             "kelly": kelly, "active": mkt.get("active", True),
             "end_date": mkt.get("end_date", ""),
             "direction": p["direction"],
@@ -1521,6 +1741,13 @@ _paper_trades = []
 _traded_tokens = set()
 _trade_cycle_log = []  # Cycle log for /api/trade-debug monitoring
 
+# ── Meta-proof mode (DISABLED) ───────────────────────────────────────────────
+# Set META_PROOF_CITY = "" to disable. Was used as a one-shot debug bypass
+# to capture proof-trade meta for a penalized station. No longer needed —
+# real main-loop trades carry ev_addon/sigma-floor meta fields directly.
+META_PROOF_CITY = ""           # Empty string = disabled
+_meta_proof_consumed = True    # Pre-consumed so all bypass paths are inert
+
 # ── Load unresolved trades from ledger so exit engine survives restarts ──
 if HAS_LEDGER:
     try:
@@ -1553,10 +1780,11 @@ _MAX_ADJACENT_BINS = 3  # Max trades on adjacent temperature bins for same city/
 
 def _run_auto_trade_cycle():
     """Execute one auto-trade cycle: get signals, filter, place orders."""
-    global _paper_trades
+    global _paper_trades, _meta_proof_consumed
     cfg = _auto_trade_config
     if not _auto_trade_active:
         return
+    logger.debug("CYCLE_CANARY: new code active")
     try:
         _trade_cycle_log.append({"ts": datetime.now(timezone.utc).isoformat(), "status": "cycle_entry", "active": _auto_trade_active})
         if len(_trade_cycle_log) > 30: _trade_cycle_log.pop(0)
@@ -1599,6 +1827,7 @@ def _run_auto_trade_cycle():
                         "prices": m.get("prices", {}),
                         "tokens": _tokens,
                         "confidence": m.get("confidence", 0),
+                        "condition_id": m.get("market_id", m.get("condition_id", "")),
                         "yes_price": _yes_p,
                         "no_price": _no_p,
                         "best_side": "YES" if _yes_p < _no_p else "NO",
@@ -1620,6 +1849,9 @@ def _run_auto_trade_cycle():
                 pass
         wx_cities = _weather_cache["data"].get("cities", []) if _weather_cache["data"] else []
         sigs = _build_signals(wm, wx_cities)
+        # Repeating diagnostic: log which cities are in sigs and whether META_PROOF city has markets
+        # Fires every cycle until META_PROOF trade fires.
+        # (META_PROOF diagnostics removed — META_PROOF_CITY is disabled)
         if not sigs:
             _trade_cycle_log.append({"ts": datetime.now(timezone.utc).isoformat(), "status": "no_signals", "wm": len(wm), "wx": len(wx_cities)})
             if len(_trade_cycle_log) > 30: _trade_cycle_log.pop(0)
@@ -1722,13 +1954,26 @@ def _run_auto_trade_cycle():
                 logger.warning("IntelligenceFeed cycle failed: %s", e)
                 _ruflo_coordinator.report_agent_status('intelligence_feed', False, e)
 
+        # ── Knob B: Apply sigma floor from station reliability ──────────
+        # Noisy stations get a wider minimum sigma so the model doesn't
+        # overtrade on data it can't trust.
+        _sigma_floored = 0
+        for sig in sigs:
+            _floor = sig.get('sigma_floor_c', 0)
+            if _floor > 0 and sig.get('sigma', 0) < _floor:
+                sig['sigma_before_floor'] = sig['sigma']
+                sig['sigma'] = round(_floor, 3)
+                _sigma_floored += 1
+        if _sigma_floored:
+            logger.debug("SIGMA_FLOOR: applied to %d/%d signals", _sigma_floored, len(sigs))
+
         # ── Recalculate probabilities using calibrated sigma ──────────────
         # enrich_signals_phase3 adjusts sigma per station via AccuracyTracker.
         # Now recompute our_prob, theo_ev, ev_dollar with the updated sigma.
         _recal = 0
         for sig in sigs:
             _new_sigma = sig.get('sigma', 0)
-            _old_sigma = sig.get('intel_sigma_old', _new_sigma)
+            _old_sigma = sig.get('intel_sigma_old', sig.get('sigma_before_floor', _new_sigma))
             if _new_sigma <= 0 or _new_sigma == _old_sigma:
                 continue  # no adjustment or bad data
             _fc = sig.get('ftemp_c')
@@ -1791,8 +2036,20 @@ def _run_auto_trade_cycle():
                 logger.warning("Coordinator evaluate failed: %s", e)
                 _ruflo_coordinator.report_agent_status('coordinator', False, e)
 
-        # ── Agent 13: Station Bias → SharedState ──────────────────────
-        if HAS_STATION_BIAS and RUFLO_AVAILABLE:
+        # ── Agent 13: Station Bias Agent — daily poll + enrich + publish ──
+        if HAS_BIAS_AGENT:
+            try:
+                _bias_agent.poll()  # Only re-reads DB if stale (daily cadence)
+                _bias_agent.enrich_signals(sigs)  # Add bias metadata to signals
+                if RUFLO_AVAILABLE:
+                    _bias_agent.publish_to_shared_state(_ruflo_shared)
+                    _ruflo_coordinator.report_agent_status('bias_agent', True)
+            except Exception as _bias_err:
+                logger.debug("Bias agent cycle failed: %s", _bias_err)
+                if RUFLO_AVAILABLE:
+                    _ruflo_coordinator.report_agent_status('bias_agent', False, _bias_err)
+        elif HAS_STATION_BIAS and RUFLO_AVAILABLE:
+            # Fallback: old publish-only path
             try:
                 station_bias.publish_to_shared_state(_ruflo_shared)
             except Exception as _bias_err:
@@ -1994,14 +2251,52 @@ def _run_auto_trade_cycle():
         # Filter for tradeable signals
         # AGGREGATOR RULE: agents emit features, only this filter + coordinator decides.
         # Cross-city gates raise min_ev for inconsistent signals.
+        # ── data_quality gate: raise min_ev and shrink sizing for weak data ──
+        _MIN_EV_BUMP = {"good": 0.0, "partial": 3.0, "fallback": 999.0}
+        _KELLY_MULT  = {"good": 1.0, "partial": 0.6, "fallback": 0.0}
+        _meta_proof_city_lower_ev = META_PROOF_CITY.lower() if META_PROOF_CITY else None
+        for _s in sigs:
+            _dq = _s.get("data_quality", "good")
+            # META_PROOF: bypass the 999pp fallback EV gate for the proof city (paper mode, one-shot)
+            _is_proof_city = (cfg["paper_mode"] and not _meta_proof_consumed
+                              and _meta_proof_city_lower_ev
+                              and _s.get("city", "").lower() == _meta_proof_city_lower_ev)
+            _ev_bump = 0.0 if _is_proof_city else _MIN_EV_BUMP.get(_dq, 0)
+            # Knob C: station reliability EV addon (from bias agent)
+            _ev_bump += _s.get("ev_addon", 0)
+            _s["_min_ev_adj"] = max(cfg["min_ev"], cfg["min_ev"] + _ev_bump)
+            _s["_kelly_mult"] = 1.0 if _is_proof_city else _KELLY_MULT.get(_dq, 1.0)
+            if _dq == "partial" and not _is_proof_city:
+                _s["kelly"] = round(_s.get("kelly", 0) * 0.6, 1)
+
+        _meta_proof_city_lower = META_PROOF_CITY.lower() if META_PROOF_CITY else None
         tradeable = [s for s in sigs
-                     if s.get("theo_ev", 0) >= max(cfg["min_ev"], s.get("cross_city_min_ev", 0))
+                     if s.get("theo_ev", 0) >= max(s.get("_min_ev_adj", cfg["min_ev"]), s.get("cross_city_min_ev", 0))
                      and s.get("kelly", 0) >= cfg["min_kelly"]
                      and s.get("signal") in ("BUY YES", "BUY NO")
                      and s.get("tokens")
-                     and s.get("market_price", 0) >= 5  # Skip penny markets (<$0.05) — no liquidity, inflated EV
+                     and s.get("market_price", 0) >= 1.0  # Skip sub-1% penny markets — no real liquidity
+                     and (s.get("data_quality", "good") != "fallback"  # Never trade on fallback data
+                          # META_PROOF one-shot override: allow proof city through fallback gate in paper mode
+                          or (cfg["paper_mode"] and not _meta_proof_consumed
+                              and _meta_proof_city_lower
+                              and s.get("city", "").lower() == _meta_proof_city_lower))
                      and s.get("coordinator_verdict", "trade") not in ("veto", "cooldown")]
         tradeable.sort(key=lambda s: s.get("ev_dollar", s["theo_ev"]), reverse=True)
+        # META_PROOF debug: log why proof city is/isn't in tradeable list
+        if _meta_proof_city_lower and not _meta_proof_consumed:
+            _proof_sigs = [s for s in sigs if s.get("city", "").lower() == _meta_proof_city_lower]
+            _proof_in_tradeable = any(s.get("city", "").lower() == _meta_proof_city_lower for s in tradeable)
+            if _proof_sigs and not _proof_in_tradeable:
+                for _ps in _proof_sigs[:1]:
+                    logger.info(
+                        "META_PROOF_DIAG: %s | theo_ev=%.1f min_ev_adj=%.1f kelly=%.1f signal=%s "
+                        "tokens=%s market_price=%.1f data_quality=%s coordinator=%s consumed=%s",
+                        _ps.get("city"), _ps.get("theo_ev", 0), _ps.get("_min_ev_adj", cfg["min_ev"]),
+                        _ps.get("kelly", 0), _ps.get("signal"), bool(_ps.get("tokens")),
+                        _ps.get("market_price", 0), _ps.get("data_quality"), _ps.get("coordinator_verdict"),
+                        _meta_proof_consumed,
+                    )
         _trade_cycle_log.append({"ts": datetime.now(timezone.utc).isoformat(), "status": "running", "sigs": len(sigs), "tradeable": len(tradeable), "wm": len(wm)})
         if len(_trade_cycle_log) > 30: _trade_cycle_log.pop(0)
         logger.info("Auto-trade: %d signals -> %d tradeable (ev>=%s kelly>=%s)", len(sigs), len(tradeable), cfg["min_ev"], cfg["min_kelly"])
@@ -2024,6 +2319,8 @@ def _run_auto_trade_cycle():
             except Exception as _re4:
                 logger.debug("Ruflo Agent4 re-rank error: %s", _re4)
         traded = 0
+        _cycle_cities = set()  # max 1 new entry per city per cycle — prevents correlated exposure creep
+        _this_sig_is_proof_bypass = False  # Tracks per-iteration if META_PROOF dedupe was bypassed
         for sig in tradeable:
             tokens = sig.get("tokens", [])
             sig_type = sig["signal"]
@@ -2037,11 +2334,27 @@ def _run_auto_trade_cycle():
             if not token_id:
                 logger.warning("TRADE_SKIP: %s | no token_id found (outcomes=%s)", sig.get('city',''), [t.get('outcome') for t in tokens])
                 continue
+            _this_sig_is_proof_bypass = False  # Reset per iteration
             if token_id in _traded_tokens:
-                logger.debug("TRADE_SKIP: %s | token already traded", sig.get('city',''))
-                continue  # Already have an order on this token
+                # Meta-proof bypass: one-shot dedupe skip for paper mode verification
+                _city_check = sig.get('city', '').lower()
+                if (cfg["paper_mode"]
+                        and not _meta_proof_consumed
+                        and META_PROOF_CITY
+                        and _city_check == META_PROOF_CITY.lower()):
+                    logger.info("META_PROOF: bypassing dedupe once for %s (paper only, consumed on confirmed trade)",
+                                sig.get('city'))
+                    _this_sig_is_proof_bypass = True  # Will consume on successful placement
+                    # Allow through — do NOT continue
+                else:
+                    logger.debug("TRADE_SKIP: %s | token already traded", sig.get('city',''))
+                    continue  # Already have an order on this token
             # Exposure cap: limit total USD deployed per city per day
             _city = sig.get('city', 'unknown')
+            # Per-city cycle throttle: max 1 new entry per city per cycle
+            if _city.lower() in _cycle_cities:
+                logger.debug("CYCLE_CITY_CAP: %s | already traded this city this cycle", _city)
+                continue
             _today_str = datetime.now(timezone.utc).strftime('%Y-%m-%d')
             _city_key = (_city.lower(), _today_str)
             _current_exposure = _city_day_exposure.get(_city_key, 0)
@@ -2064,12 +2377,14 @@ def _run_auto_trade_cycle():
             if ACTIVE_TRADER_AVAILABLE:
                 _direction = sig.get("direction", "exact")
                 _threshold = sig.get("threshold", 0) or 0
+                # Convert threshold from Celsius to Fahrenheit (obs are in F)
+                _threshold_f = _threshold * 9.0 / 5.0 + 32.0
                 if _direction == "above":
-                    _bin_lo, _bin_hi = _threshold, 999.0
+                    _bin_lo, _bin_hi = _threshold_f, 999.0
                 elif _direction == "below":
-                    _bin_lo, _bin_hi = 0.0, _threshold
+                    _bin_lo, _bin_hi = 0.0, _threshold_f
                 else:  # exact / between range
-                    _bin_lo, _bin_hi = _threshold - 0.9, _threshold + 0.9
+                    _bin_lo, _bin_hi = _threshold_f - 1.8, _threshold_f + 1.8
                 _local_hour = _get_local_hour(sig.get("city", ""))
                 _ok, _reason = should_enter(sig.get("city", ""), _bin_lo, _bin_hi, _local_hour)
                 if not _ok:
@@ -2083,6 +2398,7 @@ def _run_auto_trade_cycle():
                     'ev': sig.get('theo_ev', 0),
                     'end_date': sig.get('end_date', ''),
                     'size': cfg['max_size'],
+                    'size_cap': cfg['max_size'],  # align Ruflo cap with bot config
                 }
                 _v_ok, _v_reason = _ruflo_validator.validate(_ruflo_sig)
                 if not _v_ok:
@@ -2092,10 +2408,13 @@ def _run_auto_trade_cycle():
             mkt_price = float(sig.get("market_price", 50)) / 100.0
             # CLOB book check: compute edge-at-fill with real depth
             _clob_info = None
+            _book_fetched = False
+            _side_depth = None
             if HAS_CLOB_BOOK:
                 try:
                     _book = clob_book.get_book(token_id)
                     if _book:
+                        _book_fetched = True
                         _book_side = "buy_yes" if sig_type == "BUY YES" else "buy_no"
                         _clob_info = clob_book.edge_at_fill(
                             our_prob if sig_type == "BUY YES" else (1 - our_prob),
@@ -2106,8 +2425,44 @@ def _run_auto_trade_cycle():
                                 _clob_info.get("spread_pct", 0),
                                 _clob_info.get("ask_depth", 0))
                             continue
+                        # Adaptive depth + spread gates (tuned for weather market books)
+                        # Tight spread = likely latent liquidity → lower depth ok
+                        # Low price bins = pickoff magnets → require more depth
+                        if _clob_info:
+                            _ask_depth = _book.get("ask_depth_usd", 0)
+                            _bid_depth = _book.get("bid_depth_usd", 0)
+                            _spread_pct = _book.get("spread_pct", 100)
+                            _best_ask = _book.get("best_ask", 1)
+                            _best_bid = _book.get("best_bid", 0)
+                            # Hard spread cap: always skip crazy spreads
+                            if _spread_pct > 50:
+                                logger.info("SPREAD_SKIP: %s | spread=%.1f%% > 50%% max (bid=%.3f ask=%.3f)",
+                                    _city, _spread_pct, _best_bid, _best_ask)
+                                continue
+                            # Adaptive depth gate based on spread tightness and price
+                            if _best_ask < 0.03:
+                                # Sub-3-cent bins: pickoff magnets, require higher depth
+                                _min_depth = 5
+                            elif _spread_pct <= 8:
+                                _min_depth = 1   # tight spread = likely latent liquidity
+                            elif _spread_pct <= 15:
+                                _min_depth = 2   # moderate spread
+                            else:
+                                _min_depth = 3   # wider spread needs real depth
+                            # Per-side depth: check the side we actually need to fill
+                            _side_depth = _ask_depth if sig_type == "BUY YES" else _bid_depth
+                            if _side_depth < _min_depth:
+                                logger.info("DEPTH_SKIP: %s | %s_depth=$%.0f < $%d (spread=%.1f%% ask=%.3f bid=%.3f)",
+                                    _city, "ask" if sig_type == "BUY YES" else "bid",
+                                    _side_depth, _min_depth, _spread_pct, _best_ask, _best_bid)
+                                continue
                 except Exception as _clob_err:
                     logger.debug("CLOB book check failed for %s: %s", _city, _clob_err)
+            # CLOB failure guard: if book data unavailable, skip trade in paper mode
+            # This prevents fake paper profits on illiquid/unfetchable markets
+            if not _book_fetched and cfg["paper_mode"]:
+                logger.info("SIGNAL_ONLY: %s | no CLOB book data, skipping paper trade (signal logged)", _city)
+                continue
             if sig_type == "BUY YES":
                 # Use CLOB fill price if available, else estimate from market price
                 if _clob_info and _clob_info.get("fill_price"):
@@ -2125,10 +2480,33 @@ def _run_auto_trade_cycle():
             import math
             _coord_mult = float(sig.get("coordinator_size_mult", 1.0))
             _lm_mult = float(sig.get("last_mile_multiplier", 1.0))
-            _total_mult = _coord_mult * _lm_mult * float(_liquidity_mult)
-            spend = max(1.0, cfg["max_size"] * _total_mult)  # coordinator + last_mile + liquidity adjusted
+            _station_mult = float(sig.get("size_mult", 1.0))  # Knob D: station reliability sizing
+            _total_mult = _coord_mult * _lm_mult * float(_liquidity_mult) * _station_mult
+            _base_size = cfg["max_size"]
+            spend = max(1.0, _base_size * _total_mult)  # coordinator + last_mile + liquidity adjusted
+            # ── Depth cap: don't spend more than 25% of displayed side depth ──
+            # Prevents paper results from inflating on thin books and protects
+            # live fills from walking the book. Only applies when depth is known.
+            _depth_cap_applied = False
+            _spend_pre_cap = spend
+            _depth_cap_value = None
+            if _side_depth and _side_depth > 0:
+                _depth_cap_value = round(_side_depth * 0.25, 2)
+                if spend > _depth_cap_value:
+                    logger.debug("DEPTH_CAP: %s | spend $%.2f → $%.2f (25%% of side depth $%.2f)",
+                                 _city, spend, _depth_cap_value, _side_depth)
+                    spend = max(1.0, _depth_cap_value)
+                    _depth_cap_applied = True
+            _remaining_budget = max(0.0, _MAX_CITY_DAY_EXPOSURE - _current_exposure)
+            _spend_before_budget = spend
+            spend = min(spend, _remaining_budget) if _remaining_budget < spend else spend
             size = math.ceil(spend / price)
             size = max(1, size)
+            # Log size decision: base → multiplied → budget-clipped → final
+            _clip_note = f" [BUDGET_CLIP ${_spend_before_budget:.0f}→${spend:.0f}]" if spend < _spend_before_budget else ""
+            logger.debug("SIZE_DECISION: %s | base=$%.0f mult=%.2f(co=%.2f lm=%.2f liq=%.2f stn=%.2f) spend=$%.2f budget_rem=$%.0f shares=%d%s",
+                _city, _base_size, _total_mult, _coord_mult, _lm_mult, float(_liquidity_mult), _station_mult,
+                spend, _remaining_budget, size, _clip_note)
             trade_info = {
                 "ts": datetime.now(timezone.utc).isoformat(),
                 "question": sig.get("question", "")[:80],
@@ -2143,6 +2521,34 @@ def _run_auto_trade_cycle():
                 "ev_dollar": sig.get("ev_dollar", 0),
                 "clob_spread": _clob_info.get("spread_pct", 0) if _clob_info else None,
                 "clob_edge_at_fill": _clob_info.get("edge_at_fill", 0) if _clob_info else None,
+                "data_quality": sig.get("data_quality", "good"),
+                # Rich meta for post-mortem analysis (flows into ledger meta JSON)
+                "edge_pp": sig.get("theo_ev", 0),
+                "spread_pct": _clob_info.get("spread_pct", 0) if _clob_info else None,
+                "depth_usd_side": _side_depth,
+                "price_cents": round(price * 100, 1),
+                "station_confidence": sig.get("confidence", None),
+                "obs_age_minutes": sig.get("obs_age_minutes", None),
+                # Station reliability knobs (from bias agent)
+                "bias_correction_f": sig.get("bias_correction_f", 0),
+                "bias_confidence": sig.get("bias_confidence", "none"),
+                "sigma_floor_used": sig.get("sigma_floor_c", 0),
+                "ev_addon_used": sig.get("ev_addon", 0),
+                "min_ev_base_pp": cfg["min_ev"],
+                "min_ev_final_pp": sig.get("_min_ev_adj", cfg["min_ev"]),
+                "size_mult_used": sig.get("size_mult", 1.0),
+                "station_rmse": sig.get("sigma", 0),
+                "station_n": sig.get("bias_n_obs", 0),
+                "penalty_cap_hit": sig.get("penalty_cap_hit", False),
+                "station_drifting": sig.get("station_drifting", False),
+                "drift_shift_f": sig.get("drift_shift_f", 0.0),
+                "ev_addon_reasons": sig.get("ev_addon_reasons", []),
+                # Depth cap audit trail
+                "depth_cap_applied": _depth_cap_applied,
+                "depth_cap_value_usd": _depth_cap_value,
+                "spend_pre_cap": round(_spend_pre_cap, 2),
+                # Meta-proof flag — present only when dedupe was bypassed for this trade
+                "meta_proof_bypass": _this_sig_is_proof_bypass,
             }
             if cfg["paper_mode"]:
                 trade_info["mode"] = "PAPER"
@@ -2157,6 +2563,10 @@ def _run_auto_trade_cycle():
                 if len(_trade_log) > _MAX_TRADE_LOG:
                     _trade_log[:] = _trade_log[-_MAX_TRADE_LOG:]
                 logger.info("PAPER TRADE: %s %s @ %.2f x %.1f (EV=%.1f evD=%.1f mult=%.2f)", sig_type, sig.get("city",""), price, size, sig.get("theo_ev",0), sig.get("ev_dollar",0), _total_mult)
+                # META_PROOF: consume only on confirmed trade placement
+                if _this_sig_is_proof_bypass:
+                    _meta_proof_consumed = True
+                    logger.info("META_PROOF_CONSUMED: proof trade confirmed for %s", sig.get("city",""))
                 # Record fill for liquidity timing learning
                 if HAS_LIQUIDITY and _liquidity_timer:
                     try:
@@ -2178,6 +2588,7 @@ def _run_auto_trade_cycle():
                          'ev': sig.get('theo_ev', 0), 'city': sig.get('city','')},
                         {'won': None, 'pnl': 0})
                 traded += 1
+                _cycle_cities.add(_city.lower())  # prevent second entry same city this cycle
                 if traded >= cfg["max_trades_per_cycle"]:
                     break
             else:
@@ -2218,7 +2629,10 @@ def _run_auto_trade_cycle():
                     trade_info["error"] = str(exc)[:200]
                     _trade_log.append(trade_info)
         # ÃÂÃÂ¢ÃÂÃÂÃÂÃÂÃÂÃÂ¢ÃÂÃÂÃÂÃÂ Agent 5: NO Harvester ÃÂÃÂ¢ÃÂÃÂÃÂÃÂÃÂÃÂ¢ÃÂÃÂÃÂÃÂÃÂÃÂ¢ÃÂÃÂÃÂÃÂÃÂÃÂ¢ÃÂÃÂÃÂÃÂÃÂÃÂ¢ÃÂÃÂÃÂÃÂÃÂÃÂ¢ÃÂÃÂÃÂÃÂÃÂÃÂ¢ÃÂÃÂÃÂÃÂÃÂÃÂ¢ÃÂÃÂÃÂÃÂÃÂÃÂ¢ÃÂÃÂÃÂÃÂÃÂÃÂ¢ÃÂÃÂÃÂÃÂÃÂÃÂ¢ÃÂÃÂÃÂÃÂÃÂÃÂ¢ÃÂÃÂÃÂÃÂÃÂÃÂ¢ÃÂÃÂÃÂÃÂÃÂÃÂ¢ÃÂÃÂÃÂÃÂÃÂÃÂ¢ÃÂÃÂÃÂÃÂÃÂÃÂ¢ÃÂÃÂÃÂÃÂÃÂÃÂ¢ÃÂÃÂÃÂÃÂÃÂÃÂ¢ÃÂÃÂÃÂÃÂÃÂÃÂ¢ÃÂÃÂÃÂÃÂÃÂÃÂ¢ÃÂÃÂÃÂÃÂÃÂÃÂ¢ÃÂÃÂÃÂÃÂÃÂÃÂ¢ÃÂÃÂÃÂÃÂÃÂÃÂ¢ÃÂÃÂÃÂÃÂÃÂÃÂ¢ÃÂÃÂÃÂÃÂÃÂÃÂ¢ÃÂÃÂÃÂÃÂÃÂÃÂ¢ÃÂÃÂÃÂÃÂÃÂÃÂ¢ÃÂÃÂÃÂÃÂÃÂÃÂ¢ÃÂÃÂÃÂÃÂÃÂÃÂ¢ÃÂÃÂÃÂÃÂÃÂÃÂ¢ÃÂÃÂÃÂÃÂÃÂÃÂ¢ÃÂÃÂÃÂÃÂÃÂÃÂ¢ÃÂÃÂÃÂÃÂÃÂÃÂ¢ÃÂÃÂÃÂÃÂÃÂÃÂ¢ÃÂÃÂÃÂÃÂÃÂÃÂ¢ÃÂÃÂÃÂÃÂÃÂÃÂ¢ÃÂÃÂÃÂÃÂÃÂÃÂ¢ÃÂÃÂÃÂÃÂÃÂÃÂ¢ÃÂÃÂÃÂÃÂÃÂÃÂ¢ÃÂÃÂÃÂÃÂÃÂÃÂ¢ÃÂÃÂÃÂÃÂÃÂÃÂ¢ÃÂÃÂÃÂÃÂÃÂÃÂ¢ÃÂÃÂÃÂÃÂÃÂÃÂ¢ÃÂÃÂÃÂÃÂÃÂÃÂ¢ÃÂÃÂÃÂÃÂÃÂÃÂ¢ÃÂÃÂÃÂÃÂ
-        if RUFLO_AVAILABLE and sigs:
+        # ── NO_HARVEST DISABLED — penny-picking loses money long-term ──
+        # 90 trades earned $5.53 total ($0.06/trade), one loss wipes 400 wins.
+        # Keeping code for reference but bypassing execution.
+        if False and RUFLO_AVAILABLE and sigs:
             try:
                 no_opps = _ruflo_no_harvester.scan(sigs)
                 no_traded = 0
@@ -2388,8 +2802,9 @@ def _run_auto_trade_cycle():
                     # Parse bin range from question for kill switch check
                     _at_bin_match = _re.search(r'between\s+(\d+).*?and\s+(\d+)', _at_q_lower)
                     if _at_bin_match:
-                        _at_bin_lo = float(_at_bin_match.group(1))
-                        _at_bin_hi = float(_at_bin_match.group(2))
+                        # Convert Celsius thresholds to Fahrenheit (obs are in F)
+                        _at_bin_lo = float(_at_bin_match.group(1)) * 9.0 / 5.0 + 32.0
+                        _at_bin_hi = float(_at_bin_match.group(2)) * 9.0 / 5.0 + 32.0
                     else:
                         _at_bin_lo, _at_bin_hi = 0.0, 999.0  # Can't parse, allow through
                     _at_kill_hour = _get_local_hour(_at_city)
@@ -2409,6 +2824,10 @@ def _run_auto_trade_cycle():
                         'ev': _at_edge,
                         'end_date': _at.get('end_date', ''),
                         'size': _at_sz,
+                        # Agent signals set their own intentional size (e.g. OBS_KILL_NO at $25).
+                        # Size cap here is the agent's own requested size, so the Ruflo guard
+                        # catches only runaway values, not normal agent sizing.
+                        'size_cap': _at_sz,
                     }
                     if _at_sig == 'HEDGE':
                         _at_v_ok, _at_v_reason = _ruflo_validator.validate_safety(_at_ruflo_sig)
@@ -2602,6 +3021,56 @@ def _run_auto_trade_cycle():
 
         logger.info("Auto-trade: placed %d paper trades this cycle", traded)
         logger.info("Auto-trade cycle done: %d trades placed (%s mode)", traded, "PAPER" if cfg["paper_mode"] else "LIVE")
+
+        # ── SHADOW RELAXED CONFIG: sensitivity analysis (log-only, never trades) ──
+        # Runs the same tradeable signals through relaxed execution gates
+        # to measure how many more trades we'd get with looser thresholds.
+        _shadow_count = 0
+        _shadow_reasons = {"depth": 0, "spread": 0, "clob_fail": 0, "entry_kill": 0, "passed": 0}
+        for _sh_sig in tradeable:
+            _sh_tokens = _sh_sig.get("tokens", [])
+            _sh_type = _sh_sig["signal"]
+            _sh_target = "Yes" if _sh_type == "BUY YES" else "No"
+            _sh_tid = None
+            for _sh_tk in _sh_tokens:
+                if str(_sh_tk.get("outcome", "")).lower() == _sh_target.lower():
+                    _sh_tid = _sh_tk.get("token_id", "")
+                    break
+            if not _sh_tid or _sh_tid in _traded_tokens:
+                continue
+            try:
+                if HAS_CLOB_BOOK:
+                    _sh_book = clob_book.get_book(_sh_tid)
+                    if not _sh_book:
+                        _shadow_reasons["clob_fail"] += 1
+                        continue
+                    _sh_ask_depth = _sh_book.get("ask_depth_usd", 0)
+                    _sh_bid_depth = _sh_book.get("bid_depth_usd", 0)
+                    # Per-side depth (same logic as strict pass)
+                    _sh_depth = _sh_ask_depth if _sh_type == "BUY YES" else _sh_bid_depth
+                    _sh_spread = _sh_book.get("spread_pct", 100)
+                    _sh_city = _sh_sig.get("city", "")
+                    # Relaxed gates: $1 depth, 80% spread (vs strict adaptive/$5 / 50%)
+                    if _sh_depth < 1:
+                        _shadow_reasons["depth"] += 1
+                        continue
+                    if _sh_spread > 80:
+                        _shadow_reasons["spread"] += 1
+                        continue
+                    _shadow_reasons["passed"] += 1
+                    _shadow_count += 1
+                    _sh_best_bid = _sh_book.get("best_bid", 0)
+                    _sh_best_ask = _sh_book.get("best_ask", 1)
+                    logger.info("SHADOW_TRADE: %s %s | depth=$%.0f spread=%.1f%% ev=%+.1fpp prob=%.1f%% mkt=%.1f%% bid=%.3f/$%.0f ask=%.3f/$%.0f",
+                        _sh_type, _sh_city, _sh_depth, _sh_spread,
+                        _sh_sig.get("theo_ev", 0), _sh_sig.get("our_prob", 0), _sh_sig.get("market_price", 0),
+                        _sh_best_bid, _sh_bid_depth, _sh_best_ask, _sh_ask_depth)
+            except Exception:
+                pass
+        if _shadow_count > 0 or any(v > 0 for v in _shadow_reasons.values()):
+            logger.info("SHADOW_SUMMARY: relaxed would trade %d (strict traded %d) | reasons: %s",
+                _shadow_count, traded, dict(_shadow_reasons))
+
         # Persist cycle stats
         if HAS_LEDGER:
             try:
@@ -3007,10 +3476,24 @@ def entry_check():
 _init_clob()
 
 # Warm up weather cache on startup so trade cycle has forecast data
+# ── Open-Meteo 429 global cooldown ──
+_openmeteo_429_count = 0
+_openmeteo_cooldown_until = 0.0   # epoch seconds; 0 = no cooldown
+_OPENMETEO_COOLDOWN_S = 300       # 5 min back-off after any 429
+_OPENMETEO_CITIES_PER_CYCLE = 10  # stagger: fetch this many cities per call
+
 def _warm_weather_cache():
+    global _openmeteo_429_count, _openmeteo_cooldown_until
     import requests as _req
+
+    # Respect 429 cooldown
+    if time.time() < _openmeteo_cooldown_until:
+        _remaining = round(_openmeteo_cooldown_until - time.time())
+        logger.info("Weather cache: Open-Meteo cooldown active (%ds remaining)", _remaining)
+        return
+
     try:
-        _cities = [
+        _all_cities = [
             ("London", 51.51, -0.13), ("Paris", 48.86, 2.35), ("Tokyo", 35.68, 139.69),
             ("New York", 40.71, -74.01), ("Chicago", 41.88, -87.63), ("Houston", 29.76, -95.37),
             ("Dallas", 32.78, -96.80), ("Miami", 25.76, -80.19), ("Los Angeles", 34.05, -118.24),
@@ -3021,8 +3504,14 @@ def _warm_weather_cache():
             ("Sydney", -33.87, 151.21), ("Sao Paulo", -23.55, -46.63), ("Buenos Aires", -34.60, -58.38),
             ("Mexico City", 19.43, -99.13),
         ]
-        _lats = ",".join(str(c[1]) for c in _cities)
-        _lons = ",".join(str(c[2]) for c in _cities)
+        # Stagger: pick the next slice of cities based on how many we already have
+        _existing = _weather_cache.get("data", {}).get("cities", []) if _weather_cache.get("data") else []
+        _already_names = {c.get("name") for c in _existing}
+        _pending = [c for c in _all_cities if c[0] not in _already_names]
+        _batch = _pending[:_OPENMETEO_CITIES_PER_CYCLE] if _pending else _all_cities[:_OPENMETEO_CITIES_PER_CYCLE]
+
+        _lats = ",".join(str(c[1]) for c in _batch)
+        _lons = ",".join(str(c[2]) for c in _batch)
         _r = _req.get(
             "https://api.open-meteo.com/v1/forecast",
             params={"latitude": _lats, "longitude": _lons,
@@ -3031,25 +3520,41 @@ def _warm_weather_cache():
                     "forecast_days": 2},
             timeout=15,
         )
+        if _r.status_code == 429:
+            _openmeteo_429_count += 1
+            _openmeteo_cooldown_until = time.time() + _OPENMETEO_COOLDOWN_S
+            logger.warning("Open-Meteo 429 (#%d): cooling down for %ds",
+                           _openmeteo_429_count, _OPENMETEO_COOLDOWN_S)
+            return
+        _r.raise_for_status()
         _data = _r.json()
-        _results = []
+        _results = list(_existing)  # carry forward existing cities
         _items = _data if isinstance(_data, list) else [_data]
         for i, _item in enumerate(_items):
             _cw = _item.get("current_weather", {})
             _daily = _item.get("daily", {})
+            _city_name = _batch[i][0] if i < len(_batch) else f"City{i}"
+            # Replace or append
+            _results = [c for c in _results if c.get("name") != _city_name]
             _results.append({
-                "name": _cities[i][0] if i < len(_cities) else f"City{i}",
-                "lat": _cities[i][1] if i < len(_cities) else 0,
-                "lon": _cities[i][2] if i < len(_cities) else 0,
+                "name": _city_name,
+                "lat": _batch[i][1] if i < len(_batch) else 0,
+                "lon": _batch[i][2] if i < len(_batch) else 0,
                 "current_temp_c": _cw.get("temperature"),
                 "forecast_high_c": _daily.get("temperature_2m_max", [None, None])[1] if len(_daily.get("temperature_2m_max", [])) > 1 else _daily.get("temperature_2m_max", [None])[0],
                 "forecast_low_c": _daily.get("temperature_2m_min", [None, None])[1] if len(_daily.get("temperature_2m_min", [])) > 1 else _daily.get("temperature_2m_min", [None])[0],
             })
         _weather_cache["data"] = {"ok": True, "cities": _results, "count": len(_results)}
         _weather_cache["ts"] = time.time()
-        logger.info("Weather cache warmed: %d cities", len(_results))
+        logger.info("Weather cache warmed: %d cities (%d this batch)", len(_results), len(_items))
     except Exception as e:
-        logger.warning("Weather cache warmup failed: %s", e)
+        if "429" in str(e):
+            _openmeteo_429_count += 1
+            _openmeteo_cooldown_until = time.time() + _OPENMETEO_COOLDOWN_S
+            logger.warning("Open-Meteo 429 (#%d) via exception: cooling down %ds",
+                           _openmeteo_429_count, _OPENMETEO_COOLDOWN_S)
+        else:
+            logger.warning("Weather cache warmup failed: %s", e)
 
 # ── API endpoints for new agents ──────────────────────────────────
 
@@ -3069,15 +3574,18 @@ def api_gfs_stats():
 
 @app.route("/api/agents/bias")
 def api_bias_stats():
-    """Station bias data for all tracked stations."""
-    if not HAS_STATION_BIAS:
-        return jsonify({"ok": False, "error": "Station bias tracker not available"}), 503
-    biases = station_bias.get_all_biases()
-    return jsonify({
-        "ok": True,
-        "stations_tracked": len(biases),
-        "biases": biases,
-    })
+    """Station bias data — live agent report + raw DB biases."""
+    result = {"ok": True}
+    if HAS_BIAS_AGENT:
+        result["agent"] = _bias_agent.report()
+        result["corrections_c"] = _bias_agent.get_city_bias_c()
+    if HAS_STATION_BIAS:
+        biases = station_bias.get_all_biases()
+        result["stations_tracked"] = len(biases)
+        result["raw_biases"] = biases
+    if not HAS_BIAS_AGENT and not HAS_STATION_BIAS:
+        return jsonify({"ok": False, "error": "No bias system available"}), 503
+    return jsonify(result)
 
 @app.route("/api/agents/bias/<station>")
 def api_bias_station(station):
