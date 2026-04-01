@@ -91,6 +91,19 @@ class METARIntel:
         Returns:
             Temperature adjustment in °F, capped at ±1.5°F
         """
+        try:
+            if wdir is not None:
+                # Handles VRB (variable), /// (missing), and numeric strings
+                if isinstance(wdir, str) and (wdir.upper() in ("VRB", "///", "//", "") or not wdir.strip().lstrip('-').isdigit()):
+                    self._stats["metar_wdir_missing"] = self._stats.get("metar_wdir_missing", 0) + 1
+                    wdir = None
+                else:
+                    wdir = int(wdir)
+            if wspd is not None:
+                wspd = int(wspd)
+        except (ValueError, TypeError):
+            self._stats["metar_wdir_missing"] = self._stats.get("metar_wdir_missing", 0) + 1
+            wdir = None  # Skip wind adjustment, don't abort entire enrichment
         if wdir is None or wspd is None or wspd == 0:
             return 0.0
 

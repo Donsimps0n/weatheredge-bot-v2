@@ -11,6 +11,20 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional, Callable
 import time
 
+# Daily resolved-market data logger — keeps resolved.json / era5.json current
+try:
+    import data_logger as _data_logger
+    _HAS_DATA_LOGGER = True
+except ImportError:
+    _HAS_DATA_LOGGER = False
+
+# Trade resolver — settles open trades against Polymarket outcomes
+try:
+    import trade_resolver as _trade_resolver
+    _HAS_TRADE_RESOLVER = True
+except ImportError:
+    _HAS_TRADE_RESOLVER = False
+
 import time as _time
 try:
     import requests as _req_mod
@@ -109,11 +123,13 @@ except ImportError as _import_err:
         return []
 
     class PaperExecutionAdapter:
-        def __init__(self, ledger): self.ledger = ledger
+        def __init__(self, ledger=None): self.ledger = ledger
+        def place_order(self, **kw): return {"order_id": "stub", "status": "STUB"}
         def place_orders(self, **kw): return []
 
     class LiveExecutionAdapter:
-        def __init__(self, ledger, fee_client): self.ledger = ledger
+        def __init__(self, ledger=None, fee_client=None): self.ledger = ledger
+        def place_order(self, **kw): return {"order_id": "stub", "status": "STUB"}
         def place_orders(self, **kw): return []
 
 
@@ -442,6 +458,37 @@ class TradingScheduler:
         while True:
             now_utc = datetime.now(timezone.utc)
             is_burst, trigger_label = self.is_burst_trigger(now_utc)
+
+            # Daily data logger — appends newly resolved markets + ERA5 to JSON stores
+            if _HAS_DATA_LOGGER:
+                try:
+                    dl_result = _data_logger.maybe_update()
+                    if dl_result.get("ran"):
+                        logger.info(
+                            "data_logger: +%d resolved rows, +%d ERA5 rows, new cities: %s",
+                            dl_result.get("new_resolved", 0),
+                            dl_result.get("new_era5", 0),
+                            dl_result.get("new_cities", []),
+                        )
+                        if dl_result.get("error"):
+                            logger.warning("data_logger error: %s", dl_result["error"])
+                except Exception as _dl_exc:
+                    logger.warning("data_logger raised: %s", _dl_exc)
+
+            # Trade resolver — settle open trades against Polymarket outcomes
+            if _HAS_TRADE_RESOLVER:
+                try:
+                    tr_result = _trade_resolver.resolve_trades()
+                    if tr_result.get("ran") and tr_result.get("resolved_count", 0) > 0:
+                        logger.info(
+                            "trade_resolver: settled %d trades — W=%d L=%d PnL=$%.2f",
+                            tr_result["resolved_count"],
+                            tr_result.get("wins", 0),
+                            tr_result.get("losses", 0),
+                            tr_result.get("total_pnl", 0),
+                        )
+                except Exception as _tr_exc:
+                    logger.warning("trade_resolver raised: %s", _tr_exc)
 
             # Check HRRR polling
             should_poll = self.should_poll_hrrr(now_utc, self.last_hrrr_poll)

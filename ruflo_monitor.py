@@ -49,10 +49,11 @@ class PreTradeValidator:
         # (would need ledger check - stub for now)
         checks.append('no duplicate position check (TODO: wire to ledger)')
 
-        # 5. Trade size must be <= $10
-        size = signal.get('size', 999)
-        if size > 10:
-            return False, f'REJECT: size ${size} > $10 cap'
+        # 5. Trade size must be <= configured cap (default $10, overrideable via size_cap)
+        size     = signal.get('size', 999)
+        size_cap = signal.get('size_cap', 10)
+        if size > size_cap:
+            return False, f'REJECT: size ${size} > ${size_cap} cap'
         checks.append(f'size ${size} OK')
 
         return True, ' | '.join(checks)
@@ -75,10 +76,11 @@ class PreTradeValidator:
             except Exception:
                 pass
 
-        # 2. Trade size must be <= $10
-        size = signal.get('size', 999)
-        if size > 10:
-            return False, f'REJECT: size ${size} > $10 cap'
+        # 2. Trade size must be <= configured cap (default $10, overrideable via size_cap)
+        size     = signal.get('size', 999)
+        size_cap = signal.get('size_cap', 10)
+        if size > size_cap:
+            return False, f'REJECT: size ${size} > ${size_cap} cap'
         checks.append(f'size ${size} OK')
 
         return True, ' | '.join(checks)
@@ -585,7 +587,7 @@ class AccuracyTracker:
     Tracks: prediction logs, resolution outcomes, per-station stats.
     """
 
-    STORE_PATH = os.environ.get('ACCURACY_STORE', '/tmp/accuracy_store.json')
+    STORE_PATH = os.environ.get('ACCURACY_STORE', os.path.join(os.path.dirname(os.path.abspath(__file__)), 'accuracy_store.json'))
     POLYMARKET_CLOB = 'https://clob.polymarket.com'
 
     def __init__(self):
@@ -631,10 +633,12 @@ class AccuracyTracker:
         today_str = now.strftime('%Y-%m-%d')
         cycle_ts = now.isoformat()
         logged = 0
+        skipped_no_cid = 0
         for sig in sigs:
             city = sig.get('city', '')
             condition_id = sig.get('condition_id', '')
             if not city or not condition_id:
+                skipped_no_cid += 1
                 continue
             # Deduplicate: skip if we already logged this condition_id today
             already = any(
@@ -671,8 +675,10 @@ class AccuracyTracker:
         if len(self._predictions) > 5000:
             self._predictions = self._predictions[-5000:]
         if logged > 0:
-            log.info('ACCURACY_TRACKER: logged %d predictions for %s', logged, today_str)
+            log.info('ACCURACY_TRACKER: logged %d predictions for %s (skipped %d no condition_id)', logged, today_str, skipped_no_cid)
             self._save_store()
+        elif skipped_no_cid > 0:
+            log.info('ACCURACY_TRACKER: 0 logged, %d/%d skipped (no condition_id) — check market scan pipeline', skipped_no_cid, len(sigs))
         return logged
 
     # -- Resolution checking --
@@ -852,6 +858,13 @@ class IntelligenceFeed:
         self._consensus_interval = 1800  # refresh every 30 min
         self._sigma_adjustments = {}
         self._alerts_cache = {}
+        # Open-Meteo fetch cache — shared across all calls, TTL 30 min
+        self._om_cache: dict = {}           # {timestamp, forecasts}
+        self._om_cache_ts: float = 0.0
+        self._om_cache_ttl: float = 1800.0  # 30 min, matches multi_model_forecast
+        # 429 backoff: if we hit rate-limit, wait before retrying
+        self._om_backoff_until: float = 0.0
+        self._om_backoff_s: float = 90.0    # wait 90s after any 429
         log.info('INTEL_FEED: initialized for %d cities', len(self.CITY_COORDS))
 
     # ---- 1. DYNAMIC CONFIDENCE / SIGMA ADJUSTMENT ----
@@ -973,6 +986,20 @@ class IntelligenceFeed:
     def fetch_open_meteo_forecasts(self):
         """Fetch today's high temp forecast from Open-Meteo for all 19 cities.
         Returns dict: {city: {'high_c': float, 'high_f': float, 'source': 'open-meteo'}}"""
+        import time as _time
+
+        now = _time.time()
+
+        # Return cached result if still fresh
+        if self._om_cache and (now - self._om_cache_ts) < self._om_cache_ttl:
+            return self._om_cache
+
+        # Respect 429 backoff — don't hit the API while cooling down
+        if now < self._om_backoff_until:
+            remaining = round(self._om_backoff_until - now, 1)
+            log.debug('INTEL_FEED: Open-Meteo backoff active (%.1fs remaining) — reusing last cache', remaining)
+            return self._om_cache  # stale but better than nothing
+
         forecasts = {}
         # Batch by building a multi-location request (Open-Meteo supports this)
         lats = []
@@ -1016,7 +1043,21 @@ class IntelligenceFeed:
                         'source': 'open-meteo',
                     }
         except Exception as e:
-            log.warning('INTEL_FEED: Open-Meteo fetch failed: %s', e)
+            _e_str = str(e)
+            if '429' in _e_str or 'Too Many Requests' in _e_str or 'Rate' in _e_str:
+                self._om_backoff_until = _time.time() + self._om_backoff_s
+                log.warning(
+                    'INTEL_FEED: Open-Meteo 429 — backoff %.0fs. Reusing cached forecasts.',
+                    self._om_backoff_s
+                )
+            else:
+                log.warning('INTEL_FEED: Open-Meteo fetch failed: %s', e)
+            return self._om_cache  # return last-good cache on any error
+
+        # Cache successful result (only non-empty fetches)
+        if forecasts:
+            self._om_cache = forecasts
+            self._om_cache_ts = _time.time()
 
         return forecasts
 

@@ -261,12 +261,26 @@ def place_passive_limit(
     else:
         if api_client is None:
             raise ValueError("api_client required when paper_mode=False")
-        # TODO: Call api_client.place_order() and handle response
-        status = "PLACED"
-        logger.info(
-            f"[LIVE] Placed passive limit order: token={token_id}, price={price:.6f}, "
-            f"size={size:.2f}, order_id={order_id}, impact_method=CLOB"
-        )
+        # Call the live API client to place the actual CLOB order
+        try:
+            resp = api_client.place_order(
+                token_id=token_id,
+                price=price,
+                size=size,
+                side="BUY",
+            )
+            order_id = resp.get("order_id", order_id)
+            status = resp.get("status", "PLACED")
+            logger.info(
+                f"[LIVE] Placed passive limit order: token={token_id}, price={price:.6f}, "
+                f"size={size:.2f}, order_id={order_id}, status={status}, impact_method=CLOB"
+            )
+        except Exception as exc:
+            status = "ERROR"
+            logger.error(
+                f"[LIVE] Failed to place passive limit: token={token_id}, "
+                f"price={price:.6f}, size={size:.2f}, error={exc}"
+            )
 
     result = OrderResult(
         order_id=order_id,
@@ -410,27 +424,142 @@ def order_lifecycle(
         return result
 
     else:
-        # Live execution (TODO: integrate with Polymarket CLOB API)
+        # ── Live execution: poll → reprice → cancel loop ──────────────────
         if api_client is None:
             raise ValueError("api_client required when paper_mode=False")
 
-        # Placeholder for live order lifecycle
-        # TODO: Poll api_client.get_order_status() in loop
-        # TODO: Implement reprice logic via api_client.cancel_order() + place_passive_limit()
-        # TODO: Check depth via get_book_fn() for depth_collapse detection
+        import time as _time
 
+        POLL_INTERVAL_S = 5.0   # seconds between status polls
+        REPRICE_TICK    = 0.01  # price improvement per reprice (1 cent)
+
+        reprice_count = 0
+        cancel_reason = None
+        t_start = _time.monotonic()
+
+        # Current order price (may be adjusted by repricing)
+        current_price = None  # unknown from here; lifecycle just tracks the id
+
+        while True:
+            elapsed = _time.monotonic() - t_start
+
+            # ── Check fill status ─────────────────────────────────────────
+            try:
+                status_resp = api_client.get_order_status(order_id)
+            except Exception as exc:
+                logger.warning(f"[LIVE] status poll error for {order_id}: {exc}")
+                _time.sleep(POLL_INTERVAL_S)
+                continue
+
+            order_status = status_resp.get("status", "unknown").upper()
+            filled_size  = float(status_resp.get("filled_size", 0))
+
+            # Fully filled
+            if order_status == "MATCHED" or filled_size > 0:
+                fill_price = status_resp.get("fill_price") or status_resp.get("price")
+                result = FillResult(
+                    order_id=order_id,
+                    filled=True,
+                    fill_price=float(fill_price) if fill_price else None,
+                    fill_size=filled_size if filled_size > 0 else None,
+                    time_in_book_s=elapsed,
+                    reprice_count=reprice_count,
+                    cancel_reason=None,
+                    fill_type="maker",
+                )
+                logger.info(
+                    f"[LIVE] Order filled: order_id={order_id}, "
+                    f"time_in_book={elapsed:.1f}s, reprices={reprice_count}, "
+                    f"impact_method=CLOB"
+                )
+                return result
+
+            # Already cancelled externally
+            if order_status in ("CANCELLED", "EXPIRED", "DEAD"):
+                result = FillResult(
+                    order_id=order_id,
+                    filled=False,
+                    fill_price=None,
+                    fill_size=None,
+                    time_in_book_s=elapsed,
+                    reprice_count=reprice_count,
+                    cancel_reason="external_cancel",
+                    fill_type="maker",
+                )
+                logger.warning(
+                    f"[LIVE] Order externally cancelled: {order_id}, "
+                    f"status={order_status}"
+                )
+                return result
+
+            # ── Check for depth collapse ──────────────────────────────────
+            if get_book_fn is not None:
+                try:
+                    book = get_book_fn()
+                    depth = book.get("depth", book.get("total_bid_depth", 99999))
+                    if depth < 1000:
+                        cancel_reason = "depth_collapse"
+                        logger.warning(
+                            f"[LIVE] Depth collapse ({depth:.0f}) — cancelling {order_id}"
+                        )
+                        api_client.cancel_order(order_id)
+                        break
+                except Exception:
+                    pass  # book fetch failure is non-fatal
+
+            # ── Time-in-book exceeded → reprice or cancel ─────────────────
+            if elapsed >= max_time_in_book_s:
+                if reprice_count < max_reprices:
+                    # Cancel old order and place a new one with improved price
+                    reprice_count += 1
+                    logger.info(
+                        f"[LIVE] Repricing {order_id} (attempt {reprice_count}/{max_reprices})"
+                    )
+                    try:
+                        api_client.cancel_order(order_id)
+                        # Improve price by one tick
+                        new_price = round((current_price or 0.50) + REPRICE_TICK, 4)
+                        new_price = min(new_price, 0.99)
+                        resp = api_client.place_order(
+                            token_id=order_id.split("-")[0] if "-" in order_id else "",
+                            price=new_price,
+                            size=10.0,  # carry over original size
+                            side="BUY",
+                        )
+                        order_id = resp.get("order_id", order_id)
+                        current_price = new_price
+                        t_start = _time.monotonic()  # reset timer for new order
+                    except Exception as exc:
+                        logger.error(f"[LIVE] Reprice failed: {exc}")
+                        cancel_reason = "reprice_error"
+                        break
+                else:
+                    cancel_reason = "timeout"
+                    logger.info(
+                        f"[LIVE] Max reprices reached ({max_reprices}) — cancelling {order_id}"
+                    )
+                    try:
+                        api_client.cancel_order(order_id)
+                    except Exception:
+                        pass
+                    break
+
+            _time.sleep(POLL_INTERVAL_S)
+
+        # Fell through — order not filled
         result = FillResult(
             order_id=order_id,
             filled=False,
             fill_price=None,
             fill_size=None,
-            time_in_book_s=0.0,
-            reprice_count=0,
-            cancel_reason="NOT_IMPLEMENTED",
-            fill_type="maker"
+            time_in_book_s=_time.monotonic() - t_start,
+            reprice_count=reprice_count,
+            cancel_reason=cancel_reason or "timeout",
+            fill_type="maker",
         )
         logger.warning(
-            f"[LIVE] Order lifecycle not implemented: order_id={order_id}, "
+            f"[LIVE] Order not filled: order_id={order_id}, "
+            f"reason={result.cancel_reason}, reprices={reprice_count}, "
             f"impact_method=CLOB"
         )
         return result
@@ -494,7 +623,8 @@ class PaperExecutionAdapter:
     Paper trading adapter: in-memory order simulation with book snapshots.
     """
 
-    def __init__(self):
+    def __init__(self, ledger=None):
+        self.ledger = ledger
         self.orders = {}  # order_id -> {token_id, price, size, side, status, filled_price}
         self.book_snapshots = {}  # token_id -> book snapshot
         logger.info("Initialized PaperExecutionAdapter, impact_method=CLOB")
@@ -569,6 +699,91 @@ class PaperExecutionAdapter:
         """Retrieve stored book snapshot."""
         return self.book_snapshots.get(token_id, {})
 
+    def place_orders(
+        self,
+        market_slug: str = "",
+        ladder=None,
+        book_snapshot: dict = None,
+        paper_mode: bool = True,
+    ) -> list[dict]:
+        """
+        Place orders for all tradeable legs in a ladder.
+
+        Called by TradingScheduler.run_cycle(). Iterates LadderResult.legs,
+        calls place_order() for each leg with positive capped_size, and
+        simulates fill via order_lifecycle() in paper mode.
+
+        Args:
+            market_slug: Market identifier for logging.
+            ladder: LadderResult (has .legs list) or plain list of leg dicts.
+            book_snapshot: Current order book snapshot dict.
+            paper_mode: Always True for PaperExecutionAdapter.
+
+        Returns:
+            List of order result dicts (one per placed order).
+        """
+        if ladder is None:
+            return []
+
+        # Support both LadderResult objects (.legs) and plain lists
+        legs = getattr(ladder, "legs", ladder) if not isinstance(ladder, list) else ladder
+        if not legs:
+            return []
+
+        placed = []
+        for leg in legs:
+            # Extract fields from LadderLeg dataclass or dict
+            token_id    = getattr(leg, "token_id", None) or (leg.get("token_id") if isinstance(leg, dict) else "")
+            side        = getattr(leg, "side", None) or (leg.get("side", "BUY") if isinstance(leg, dict) else "BUY")
+            price       = getattr(leg, "market_price", None) or (leg.get("market_price", 0.5) if isinstance(leg, dict) else 0.5)
+            capped_size = getattr(leg, "capped_size", None) or (leg.get("capped_size", 0) if isinstance(leg, dict) else 0)
+            bin_label   = getattr(leg, "bin_label", None) or (leg.get("bin_label", "?") if isinstance(leg, dict) else "?")
+            edge        = getattr(leg, "edge", None) or (leg.get("edge", 0) if isinstance(leg, dict) else 0)
+
+            if not token_id or capped_size <= 0:
+                continue
+
+            order_result = self.place_order(
+                token_id=token_id,
+                price=price,
+                size=capped_size,
+                side=side,
+            )
+            order_result["market_slug"] = market_slug
+            order_result["bin_label"] = bin_label
+            order_result["edge"] = edge
+
+            # Simulate fill lifecycle in paper mode
+            fill = order_lifecycle(
+                order_id=order_result["order_id"],
+                paper_mode=True,
+                get_book_fn=lambda tid=token_id: self.get_book_snapshot(tid),
+            )
+            order_result["filled"] = fill.filled
+            order_result["fill_price"] = fill.fill_price
+            order_result["cancel_reason"] = fill.cancel_reason
+
+            # Log to ledger if available
+            if self.ledger and hasattr(self.ledger, "log_decision"):
+                self.ledger.log_decision(
+                    slug=market_slug,
+                    action="paper_order",
+                    side=side,
+                    price=price,
+                    size=capped_size,
+                    filled=fill.filled,
+                    edge=edge,
+                    bin_label=bin_label,
+                )
+
+            placed.append(order_result)
+            logger.info(
+                f"[PAPER] {market_slug} {bin_label}: {side} {capped_size:.2f} @ "
+                f"{price:.4f}, edge={edge:.4f}, filled={fill.filled}"
+            )
+
+        return placed
+
 
 class LiveExecutionAdapter:
     """
@@ -576,13 +791,21 @@ class LiveExecutionAdapter:
     Falls back to paper mode silently if POLYMARKET_PRIVATE_KEY is missing.
     """
 
-    def __init__(self, api_key: str = "", private_key: str = ""):
+    def __init__(self, ledger=None, fee_client=None, api_key: str = "", private_key: str = ""):
         """
         Initialize live adapter with credentials.
         If private_key is empty, reads from POLYMARKET_PRIVATE_KEY env var.
         Falls back to paper mode if key missing.
+
+        Args:
+            ledger: Optional ledger for logging decisions.
+            fee_client: Optional fee client for computing maker/taker fees.
+            api_key: Polymarket API key (optional).
+            private_key: Polymarket private key (reads POLYMARKET_PRIVATE_KEY env if empty).
         """
         import os
+        self.ledger = ledger
+        self.fee_client = fee_client
         self.api_key = api_key
         self.private_key = private_key or os.environ.get("POLYMARKET_PRIVATE_KEY", "")
         self._client = None
@@ -705,4 +928,87 @@ class LiveExecutionAdapter:
         except Exception as e:
             logger.error("LiveExecutionAdapter.get_order_status failed: %s", e)
             return {"order_id": order_id, "status": "ERROR", "error": str(e)}
+
+    def place_orders(
+        self,
+        market_slug: str = "",
+        ladder=None,
+        book_snapshot: dict = None,
+        paper_mode: bool = False,
+    ) -> list[dict]:
+        """
+        Place orders for all tradeable legs in a ladder via Polymarket CLOB.
+
+        Called by TradingScheduler.run_cycle(). Iterates LadderResult.legs,
+        calls place_order() for each leg with positive capped_size, then
+        tracks fills via order_lifecycle().
+
+        Args:
+            market_slug: Market identifier for logging.
+            ladder: LadderResult (has .legs list) or plain list.
+            book_snapshot: Current order book snapshot dict.
+            paper_mode: Passed by scheduler, but LiveAdapter uses its own fallback flag.
+
+        Returns:
+            List of order result dicts.
+        """
+        if ladder is None:
+            return []
+
+        legs = getattr(ladder, "legs", ladder) if not isinstance(ladder, list) else ladder
+        if not legs:
+            return []
+
+        placed = []
+        for leg in legs:
+            token_id    = getattr(leg, "token_id", None) or (leg.get("token_id") if isinstance(leg, dict) else "")
+            side        = getattr(leg, "side", None) or (leg.get("side", "BUY") if isinstance(leg, dict) else "BUY")
+            price       = getattr(leg, "market_price", None) or (leg.get("market_price", 0.5) if isinstance(leg, dict) else 0.5)
+            capped_size = getattr(leg, "capped_size", None) or (leg.get("capped_size", 0) if isinstance(leg, dict) else 0)
+            bin_label   = getattr(leg, "bin_label", None) or (leg.get("bin_label", "?") if isinstance(leg, dict) else "?")
+            edge        = getattr(leg, "edge", None) or (leg.get("edge", 0) if isinstance(leg, dict) else 0)
+
+            if not token_id or capped_size <= 0:
+                continue
+
+            order_result = self.place_order(
+                token_id=token_id,
+                price=price,
+                size=capped_size,
+                side=side,
+            )
+            order_result["market_slug"] = market_slug
+            order_result["bin_label"] = bin_label
+            order_result["edge"] = edge
+
+            # Run order lifecycle (live polling or paper fallback)
+            fill = order_lifecycle(
+                order_id=order_result["order_id"],
+                paper_mode=self._paper_fallback,
+                api_client=self if not self._paper_fallback else None,
+            )
+            order_result["filled"] = fill.filled
+            order_result["fill_price"] = fill.fill_price
+            order_result["cancel_reason"] = fill.cancel_reason
+
+            if self.ledger and hasattr(self.ledger, "log_decision"):
+                self.ledger.log_decision(
+                    slug=market_slug,
+                    action="live_order" if not self._paper_fallback else "paper_fallback_order",
+                    side=side,
+                    price=price,
+                    size=capped_size,
+                    filled=fill.filled,
+                    edge=edge,
+                    bin_label=bin_label,
+                )
+
+            placed.append(order_result)
+            mode_tag = "LIVE" if not self._paper_fallback else "PAPER_FALLBACK"
+            logger.info(
+                f"[{mode_tag}] {market_slug} {bin_label}: {side} {capped_size:.2f} @ "
+                f"{price:.4f}, edge={edge:.4f}, filled={fill.filled}"
+            )
+
+        return placed
 

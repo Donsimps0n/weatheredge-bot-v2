@@ -3157,6 +3157,145 @@ def bot_status():
     })
 
 
+@app.route("/api/trades/latest")
+def trades_latest():
+    """Latest trades split by type: main-loop, agent, and overall.
+
+    Checks both top-level fields and nested meta dict so nothing is missed.
+    Does NOT mutate _trade_log entries.
+    Query param: n=<int>  max per bucket, default 1, max 20
+    """
+    n = min(int(request.args.get("n", 1)), 20)
+    recent = list(reversed(_trade_log[-200:])) if _trade_log else []
+
+    def _meta(t):
+        m = t.get("meta", {})
+        return m if isinstance(m, dict) else {}
+
+    def _is_main_loop(t):
+        m = _meta(t)
+        return "ev_addon_reasons" in t or "ev_addon_reasons" in m
+
+    def _is_agent(t):
+        m = _meta(t)
+        signal = str(t.get("signal", "")).upper()
+        agent_markers = ("SNIPE", "GFS_DELTA", "HEDGE", "OBS_CONFIRM", "OBS_KILL")
+        return (
+            any(marker in signal for marker in agent_markers)
+            or any(k in t for k in ("sniper", "gfs_delta", "hedge", "agent_type"))
+            or any(k in m for k in ("sniper", "gfs_delta", "hedge", "agent_type"))
+        ) and not _is_main_loop(t)
+
+    _proof_keys = [
+        "ev_addon_used", "ev_addon_reasons",
+        "min_ev_base_pp", "min_ev_final_pp",
+        "depth_cap_applied", "depth_cap_value_usd",
+        "spend_pre_cap", "spend_post_cap",
+        "sigma_floor_used",
+        "bias_correction_f", "bias_confidence",
+        "station_drifting", "drift_shift_f",
+        "station_rmse", "station_n",
+    ]
+
+    def _decorate(trades):
+        out = []
+        for t in trades:
+            row = dict(t)           # shallow copy — never mutate original
+            m = _meta(t)
+            proof = {}
+            for k in _proof_keys:
+                if k in row:
+                    proof[k] = row[k]
+                elif k in m:
+                    proof[k] = m[k]
+            row["_proof"] = proof
+            row["_proof_fields_present"] = list(proof.keys())
+            out.append(row)
+        return out
+
+    main_loop = _decorate([t for t in recent if _is_main_loop(t)][:n])
+    agent     = _decorate([t for t in recent if _is_agent(t)][:n])
+    overall   = _decorate(recent[:n])
+
+    return jsonify({
+        "ok": True,
+        "boot_id": BOOT_ID,
+        "commit": GIT_COMMIT,
+        "main_loop": {"count": len(main_loop), "trades": main_loop},
+        "agent":     {"count": len(agent),     "trades": agent},
+        "overall":   {"count": len(overall),   "trades": overall},
+    })
+
+
+@app.route("/api/trades/latest_db")
+def trades_latest_db():
+    """Same as /api/trades/latest but reads from ledger.db — survives restarts.
+
+    Query param: n=<int>  rows to return, default 5, max 50
+    """
+    if not HAS_LEDGER:
+        return jsonify({"ok": False, "error": "ledger not available"}), 503
+    import sqlite3 as _sq, json as _json
+    n = min(int(request.args.get("n", 5)), 50)
+    _proof_keys = [
+        "ev_addon_used", "ev_addon_reasons",
+        "min_ev_base_pp", "min_ev_final_pp",
+        "depth_cap_applied", "depth_cap_value_usd",
+        "spend_pre_cap", "spend_post_cap",
+        "sigma_floor_used",
+        "bias_correction_f", "bias_confidence",
+        "station_drifting", "drift_shift_f",
+        "station_rmse", "station_n",
+    ]
+    try:
+        import trade_ledger as _tl
+        conn = _sq.connect(_tl.DB_PATH, check_same_thread=False)
+        conn.row_factory = _sq.Row
+        rows = conn.execute(
+            "SELECT * FROM trades ORDER BY id DESC LIMIT ?", (max(n * 10, 50),)
+        ).fetchall()
+        conn.close()
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 500
+
+    def _parse_row(row):
+        d = dict(row)
+        raw_meta = d.pop("meta", None)
+        m = {}
+        if raw_meta:
+            try:
+                m = _json.loads(raw_meta)
+            except Exception:
+                pass
+        d["meta"] = m
+        # Bubble proof fields up to top-level _proof dict
+        proof = {}
+        for k in _proof_keys:
+            if k in d:
+                proof[k] = d[k]
+            elif k in m:
+                proof[k] = m[k]
+        d["_proof"] = proof
+        d["_proof_fields_present"] = list(proof.keys())
+        d["_is_main_loop"] = "ev_addon_reasons" in proof
+        return d
+
+    parsed = [_parse_row(r) for r in rows]
+    main_loop = [r for r in parsed if r["_is_main_loop"]][:n]
+    other     = [r for r in parsed if not r["_is_main_loop"]][:n]
+    overall   = parsed[:n]
+
+    return jsonify({
+        "ok": True,
+        "boot_id": BOOT_ID,
+        "commit": GIT_COMMIT,
+        "source": "ledger.db",
+        "main_loop": {"count": len(main_loop), "trades": main_loop},
+        "other":     {"count": len(other),     "trades": other},
+        "overall":   {"count": len(overall),   "trades": overall},
+    })
+
+
 def _start_position_monitor():
     """Monitor open positions every 5 min, exit losers via active_trader rules."""
     import threading

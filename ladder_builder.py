@@ -260,7 +260,7 @@ def compute_kelly_size(
 
     logger.debug(
         f"Kelly sizing: true_prob={true_prob:.4f}, market_price={market_price:.4f}, "
-        f"edge={edge:.4f}, odds={odds?:.4f}, kelly_full={kelly_full:.4f}, "
+        f"edge={edge:.4f}, odds={odds:.4f}, kelly_full={kelly_full:.4f}, "
         f"kelly_size={kelly_size:.2f}"
     )
 

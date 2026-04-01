@@ -239,3 +239,7 @@ def create_default_config() -> APIConfig:
         APIConfig: Configuration object with defaults and environment variables.
     """
     return APIConfig()
+
+
+# Alias: scheduler.py imports "Config" — point it at APIConfig
+Config = APIConfig

@@ -187,6 +187,36 @@ def check_cross_market(
     return result
 
 
+def apply_cross_market_filter(
+    forecast_probs: dict,
+    market: dict,
+    markets: list[dict],
+) -> dict:
+    """
+    Lightweight wrapper called by TradingScheduler.run_cycle().
+
+    Takes the forecast probability dict for a single market and a list of
+    all markets in the current cycle, returning (possibly adjusted) probs.
+
+    Currently passes through unchanged — cross-market consistency checks
+    are performed separately via check_cross_market() and used for ranking
+    in rank_markets_with_cross_filter(). This wrapper exists so the scheduler
+    import doesn't break and so cross-market adjustments can be layered in
+    later without touching the scheduler code.
+
+    Args:
+        forecast_probs: Dict with keys like yes_prob, no_prob, bin_probs, source.
+        market: The current market dict being evaluated.
+        markets: All markets in the cycle (for peer comparison).
+
+    Returns:
+        The (possibly adjusted) forecast_probs dict.
+    """
+    # Future: could apply a z-score penalty to yes_prob / no_prob based on
+    # cross-market delta analysis. For now, passthrough.
+    return forecast_probs
+
+
 def rank_markets_with_cross_filter(
     markets: list[tuple[str, float, CrossMarketResult]]
 ) -> list[tuple[str, float]]:
