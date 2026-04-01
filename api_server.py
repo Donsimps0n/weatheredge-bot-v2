@@ -145,6 +145,7 @@ except ImportError:
 
 # ── Live Bias Agent — replaces hardcoded _CITY_BIAS_C ──
 _bias_agent = None
+_bias_agent_init_error = None
 HAS_BIAS_AGENT = False
 try:
     from src.bias_agent import StationBiasAgent
@@ -153,7 +154,9 @@ try:
     HAS_BIAS_AGENT = True
     logger.info("StationBiasAgent loaded: %d active corrections", _bias_agent._n_corrections_active)
 except Exception as _ba_err:
-    logger.warning("StationBiasAgent not available: %s", _ba_err)
+    import traceback
+    _bias_agent_init_error = f"{_ba_err.__class__.__name__}: {_ba_err}"
+    logger.warning("StationBiasAgent not available: %s\n%s", _ba_err, traceback.format_exc())
 
 try:
     from bin_sniper import BinSniper
@@ -516,7 +519,7 @@ def health():
                 "last_poll_ago_s": round(time.time() - _bias_agent._last_poll, 0)
                                    if _bias_agent else None,
                 "last_poll_ok": _bias_agent._last_poll_ok if _bias_agent else False,
-                "last_error": _bias_agent._last_error if _bias_agent else "agent_init_failed",
+                "last_error": _bias_agent._last_error if _bias_agent else (_bias_agent_init_error or "agent_init_failed"),
                 "last_db_mtime": _bias_agent._last_db_mtime if _bias_agent else None,
                 "poll_count": _bias_agent._poll_count if _bias_agent else 0,
             },

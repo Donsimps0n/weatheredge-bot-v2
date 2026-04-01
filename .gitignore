@@ -5,6 +5,7 @@ venv/
 .env
 .env.*
 *.db
+!station_bias.db
 *.sqlite
 .claude/
 .claude-flow/
