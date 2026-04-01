@@ -2273,6 +2273,24 @@ def _run_auto_trade_cycle():
                 _s["kelly"] = round(_s.get("kelly", 0) * 0.6, 1)
 
         _meta_proof_city_lower = META_PROOF_CITY.lower() if META_PROOF_CITY else None
+        # ── Pre-loop rejection breakdown (gate-level counters) ──
+        _rej = {"ev_gate": 0, "kelly_gate": 0, "signal_type": 0, "no_tokens": 0,
+                "penny_market": 0, "fallback_data": 0, "coordinator_veto": 0}
+        for _s in sigs:
+            _min_ev_s = max(_s.get("_min_ev_adj", cfg["min_ev"]), _s.get("cross_city_min_ev", 0))
+            if _s.get("theo_ev", 0) < _min_ev_s: _rej["ev_gate"] += 1
+            elif _s.get("kelly", 0) < cfg["min_kelly"]: _rej["kelly_gate"] += 1
+            elif _s.get("signal") not in ("BUY YES", "BUY NO"): _rej["signal_type"] += 1
+            elif not _s.get("tokens"): _rej["no_tokens"] += 1
+            elif _s.get("market_price", 0) < 1.0: _rej["penny_market"] += 1
+            elif (_s.get("data_quality", "good") == "fallback"
+                  and not (cfg["paper_mode"] and not _meta_proof_consumed
+                           and _meta_proof_city_lower
+                           and _s.get("city","").lower() == _meta_proof_city_lower)):
+                _rej["fallback_data"] += 1
+            elif _s.get("coordinator_verdict", "trade") in ("veto", "cooldown"):
+                _rej["coordinator_veto"] += 1
+
         tradeable = [s for s in sigs
                      if s.get("theo_ev", 0) >= max(s.get("_min_ev_adj", cfg["min_ev"]), s.get("cross_city_min_ev", 0))
                      and s.get("kelly", 0) >= cfg["min_kelly"]
@@ -2300,9 +2318,17 @@ def _run_auto_trade_cycle():
                         _ps.get("market_price", 0), _ps.get("data_quality"), _ps.get("coordinator_verdict"),
                         _meta_proof_consumed,
                     )
-        _trade_cycle_log.append({"ts": datetime.now(timezone.utc).isoformat(), "status": "running", "sigs": len(sigs), "tradeable": len(tradeable), "wm": len(wm)})
+        _trade_cycle_log.append({"ts": datetime.now(timezone.utc).isoformat(), "status": "running",
+                                  "sigs": len(sigs), "tradeable": len(tradeable), "wm": len(wm),
+                                  "rej": dict(_rej)})
         if len(_trade_cycle_log) > 30: _trade_cycle_log.pop(0)
-        logger.info("Auto-trade: %d signals -> %d tradeable (ev>=%s kelly>=%s)", len(sigs), len(tradeable), cfg["min_ev"], cfg["min_kelly"])
+        logger.info("Auto-trade: %d sigs -> %d tradeable | rej: ev=%d kelly=%d sig=%d penny=%d fallback=%d veto=%d dedupe=%d no_clob=%d clob=%d spread=%d depth=%d post_peak=%d kill=%d ruflo=%d exposure=%d",
+                    len(sigs), len(tradeable),
+                    _rej.get("ev_gate",0), _rej.get("kelly_gate",0), _rej.get("signal_type",0),
+                    _rej.get("penny_market",0), _rej.get("fallback_data",0), _rej.get("coordinator_veto",0),
+                    _rej.get("dedupe",0), _rej.get("no_clob_data",0), _rej.get("clob_skip",0),
+                    _rej.get("spread_skip",0), _rej.get("depth_skip",0), _rej.get("post_peak",0),
+                    _rej.get("entry_kill",0), _rej.get("ruflo_reject",0), _rej.get("exposure_cap",0))
         if tradeable:
             logger.info("Auto-trade top3: %s", [(s.get('city',''), round(s.get('theo_ev',0),1), s.get('coordinator_verdict','')) for s in tradeable[:3]])
         # Ruflo Agent 4: re-rank by edge*confidence from MarketScanner
@@ -2324,6 +2350,17 @@ def _run_auto_trade_cycle():
         traded = 0
         _cycle_cities = set()  # max 1 new entry per city per cycle — prevents correlated exposure creep
         _this_sig_is_proof_bypass = False  # Tracks per-iteration if META_PROOF dedupe was bypassed
+        # In-loop rejection counters
+        _rej["dedupe"] = 0
+        _rej["cycle_city_cap"] = 0
+        _rej["exposure_cap"] = 0
+        _rej["post_peak"] = 0
+        _rej["entry_kill"] = 0
+        _rej["ruflo_reject"] = 0
+        _rej["clob_skip"] = 0
+        _rej["spread_skip"] = 0
+        _rej["depth_skip"] = 0
+        _rej["no_clob_data"] = 0
         for sig in tradeable:
             tokens = sig.get("tokens", [])
             sig_type = sig["signal"]
@@ -2351,18 +2388,21 @@ def _run_auto_trade_cycle():
                     # Allow through — do NOT continue
                 else:
                     logger.debug("TRADE_SKIP: %s | token already traded", sig.get('city',''))
+                    _rej["dedupe"] += 1
                     continue  # Already have an order on this token
             # Exposure cap: limit total USD deployed per city per day
             _city = sig.get('city', 'unknown')
             # Per-city cycle throttle: max 1 new entry per city per cycle
             if _city.lower() in _cycle_cities:
                 logger.debug("CYCLE_CITY_CAP: %s | already traded this city this cycle", _city)
+                _rej["cycle_city_cap"] += 1
                 continue
             _today_str = datetime.now(timezone.utc).strftime('%Y-%m-%d')
             _city_key = (_city.lower(), _today_str)
             _current_exposure = _city_day_exposure.get(_city_key, 0)
             if _current_exposure >= _MAX_CITY_DAY_EXPOSURE:
                 logger.info("EXPOSURE_CAP: %s | $%.0f already deployed today (cap=$%d)", _city, _current_exposure, _MAX_CITY_DAY_EXPOSURE)
+                _rej["exposure_cap"] += 1
                 continue
             # Post-peak same-day cutoff: don't open new positions on same-day
             # markets after 5pm local (peak temp already locked in, no edge left)
@@ -2375,6 +2415,7 @@ def _run_auto_trade_cycle():
                 _is_same_day = _qday == datetime.now(timezone.utc).day
             if _is_same_day and _local_hr >= 17:
                 logger.info("POST_PEAK: %s | same-day market, local hour %d >= 17, skipping new entry", _city, _local_hr)
+                _rej["post_peak"] += 1
                 continue
             # Entry kill switch: skip if physically impossible to reach temperature
             if ACTIVE_TRADER_AVAILABLE:
@@ -2392,6 +2433,7 @@ def _run_auto_trade_cycle():
                 _ok, _reason = should_enter(sig.get("city", ""), _bin_lo, _bin_hi, _local_hour)
                 if not _ok:
                     logger.warning("ENTRY_KILL: %s bin=%.1f-%.1f | %s", sig.get("city",""), _bin_lo, _bin_hi, _reason)
+                    _rej["entry_kill"] += 1
                     continue
             # Ruflo Agent 1: PreTradeValidator ÃÂÃÂÃÂÃÂ¢ÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂ hard quality gate
             if RUFLO_AVAILABLE:
@@ -2406,6 +2448,7 @@ def _run_auto_trade_cycle():
                 _v_ok, _v_reason = _ruflo_validator.validate(_ruflo_sig)
                 if not _v_ok:
                     logger.warning("RUFLO_REJECT: %s | %s", sig.get('city', ''), _v_reason)
+                    _rej["ruflo_reject"] += 1
                     continue
             our_prob = float(sig.get("our_prob", 50)) / 100.0
             mkt_price = float(sig.get("market_price", 50)) / 100.0
@@ -2427,6 +2470,7 @@ def _run_auto_trade_cycle():
                                 _city, _clob_info.get("reason", "?"),
                                 _clob_info.get("spread_pct", 0),
                                 _clob_info.get("ask_depth", 0))
+                            _rej["clob_skip"] += 1
                             continue
                         # Adaptive depth + spread gates (tuned for weather market books)
                         # Tight spread = likely latent liquidity → lower depth ok
@@ -2441,6 +2485,7 @@ def _run_auto_trade_cycle():
                             if _spread_pct > 50:
                                 logger.info("SPREAD_SKIP: %s | spread=%.1f%% > 50%% max (bid=%.3f ask=%.3f)",
                                     _city, _spread_pct, _best_bid, _best_ask)
+                                _rej["spread_skip"] += 1
                                 continue
                             # Adaptive depth gate based on spread tightness and price
                             if _best_ask < 0.03:
@@ -2458,6 +2503,7 @@ def _run_auto_trade_cycle():
                                 logger.info("DEPTH_SKIP: %s | %s_depth=$%.0f < $%d (spread=%.1f%% ask=%.3f bid=%.3f)",
                                     _city, "ask" if sig_type == "BUY YES" else "bid",
                                     _side_depth, _min_depth, _spread_pct, _best_ask, _best_bid)
+                                _rej["depth_skip"] += 1
                                 continue
                 except Exception as _clob_err:
                     logger.debug("CLOB book check failed for %s: %s", _city, _clob_err)
@@ -2465,6 +2511,7 @@ def _run_auto_trade_cycle():
             # This prevents fake paper profits on illiquid/unfetchable markets
             if not _book_fetched and cfg["paper_mode"]:
                 logger.info("SIGNAL_ONLY: %s | no CLOB book data, skipping paper trade (signal logged)", _city)
+                _rej["no_clob_data"] += 1
                 continue
             if sig_type == "BUY YES":
                 # Use CLOB fill price if available, else estimate from market price
@@ -3296,6 +3343,73 @@ def trades_latest_db():
         "main_loop": {"count": len(main_loop), "trades": main_loop},
         "other":     {"count": len(other),     "trades": other},
         "overall":   {"count": len(overall),   "trades": overall},
+    })
+
+
+@app.route("/api/trades/latest_db_main")
+def trades_latest_db_main():
+    """Return only main-loop coordinator trades from ledger.db.
+    Skips agent trades (SNIPE, NO_HARVEST, EXIT, GFS, OBS_CONFIRM).
+    Query param: n=<int> rows, default 5, max 20
+    """
+    if not HAS_LEDGER:
+        return jsonify({"ok": False, "error": "ledger not available"}), 503
+    import sqlite3 as _sq, json as _json
+    n = min(int(request.args.get("n", 5)), 20)
+    _proof_keys = [
+        "ev_addon_used", "ev_addon_reasons",
+        "min_ev_base_pp", "min_ev_final_pp",
+        "depth_cap_applied", "depth_cap_value_usd",
+        "spend_pre_cap", "spend_post_cap",
+        "sigma_floor_used",
+        "bias_correction_f", "bias_confidence",
+        "station_drifting", "drift_shift_f",
+        "station_rmse", "station_n",
+    ]
+    _agent_signals = {"SNIPE_YES", "SNIPE_NO", "NO_HARVEST", "EXIT_SELL_ALL",
+                      "GFS_DELTA_YES", "GFS_DELTA_NO", "OBS_CONFIRM_YES", "OBS_CONFIRM_NO",
+                      "HEDGE_YES", "HEDGE_NO"}
+    try:
+        import trade_ledger as _tl
+        conn = _sq.connect(_tl.DB_PATH, check_same_thread=False)
+        conn.row_factory = _sq.Row
+        # Fetch more rows to find n main-loop trades among agent trades
+        rows = conn.execute(
+            "SELECT * FROM trades ORDER BY id DESC LIMIT ?", (max(n * 20, 100),)
+        ).fetchall()
+        conn.close()
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 500
+
+    results = []
+    for row in rows:
+        d = dict(row)
+        sig = d.get("signal", "")
+        # Skip known agent signals
+        if sig in _agent_signals:
+            continue
+        raw_meta = d.pop("meta", None)
+        m = {}
+        if raw_meta:
+            try:
+                m = _json.loads(raw_meta)
+            except Exception:
+                pass
+        d["meta"] = m
+        proof = {k: (d[k] if k in d else m[k]) for k in _proof_keys if k in d or k in m}
+        d["_proof"] = proof
+        d["_proof_fields_present"] = list(proof.keys())
+        results.append(d)
+        if len(results) >= n:
+            break
+
+    return jsonify({
+        "ok": True,
+        "boot_id": BOOT_ID,
+        "commit": GIT_COMMIT,
+        "source": "ledger.db",
+        "count": len(results),
+        "trades": results,
     })
 
 
