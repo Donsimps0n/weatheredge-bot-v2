@@ -3420,12 +3420,15 @@ def trades_latest_db_main():
 def stats_reliability():
     """Station reliability measurement and tuning metrics.
 
-    Returns:
-    - win_rate by ev_addon_reasons bucket (LOW_N, NOISY, DRIFT, clean)
-    - avg spend_vs_depth_ratio per bucket (spend_pre_cap / depth_cap_value_usd)
-    - avg ev_gate_delta per bucket (min_ev_final_pp - min_ev_base_pp)
-    - trade_source breakdown counts
-    - overall win/loss/pending counts
+    Returns per reliability bucket (clean / LOW_N / NOISY / DRIFT):
+    - win_rate_pct, won, lost, pending
+    - avg_ev_gate_delta_pp: how much reliability raised the EV gate (min_ev_final - min_ev_base)
+    - avg_spend_pre_cap_usd: desired spend before depth cap
+    - avg_side_depth_usd: actual visible book depth on trade side
+    - avg_spend_vs_depth_ratio: spend_pre_cap / side_depth (>1.0 means over-deploying vs book)
+    - avg_cap_pressure_ratio: spend_pre_cap / depth_cap_value_usd (= spend / (0.25*depth),
+      tells you how hard the depth cap had to work; >1.0 means cap fired)
+    Also returns trade_source_counts and overall totals.
     """
     if not HAS_LEDGER:
         return jsonify({"ok": False, "error": "ledger not available"}), 503
@@ -3440,8 +3443,14 @@ def stats_reliability():
     except Exception as exc:
         return jsonify({"ok": False, "error": str(exc)}), 500
 
-    buckets = defaultdict(lambda: {"trades": 0, "won": 0, "lost": 0, "pending": 0,
-                                    "ev_gate_deltas": [], "spend_depth_ratios": []})
+    buckets = defaultdict(lambda: {
+        "trades": 0, "won": 0, "lost": 0, "pending": 0,
+        "ev_gate_deltas": [],
+        "spend_pre_caps": [],
+        "side_depths": [],
+        "spend_vs_depth_ratios": [],   # spend_pre_cap / side_depth  (correct ratio)
+        "cap_pressure_ratios": [],     # spend_pre_cap / depth_cap_value_usd  (old formula, kept for reference)
+    })
     source_counts = defaultdict(int)
     overall = {"trades": 0, "won": 0, "lost": 0, "pending": 0}
 
@@ -3474,7 +3483,7 @@ def stats_reliability():
         else:
             overall["pending"] += 1
 
-        # Only bucket main_loop trades — those are the ones with reliability knobs
+        # Only bucket main_loop trades — those carry the reliability knob meta
         if source != "main_loop":
             continue
 
@@ -3505,17 +3514,32 @@ def stats_reliability():
         else:
             b["pending"] += 1
 
-        # EV gate delta: how much did reliability raise the gate?
+        # EV gate delta: how much did the reliability layer raise the gate?
         base = m.get("min_ev_base_pp", 0)
         final = m.get("min_ev_final_pp", 0)
         if base and final:
             b["ev_gate_deltas"].append(round(final - base, 2))
 
-        # Spend vs depth ratio: how much of available depth did we use?
-        spend_pre = m.get("spend_pre_cap", 0)
-        depth_cap = m.get("depth_cap_value_usd", 0)
+        # Depth metrics — two separate ratios, clearly named
+        spend_pre = m.get("spend_pre_cap") or 0
+        # side_depth is stored directly in meta as "depth_usd_side"
+        # depth_cap_value_usd = side_depth * 0.25 (stored separately)
+        side_depth = m.get("depth_usd_side") or 0
+        depth_cap = m.get("depth_cap_value_usd") or 0
+
+        if spend_pre:
+            b["spend_pre_caps"].append(round(spend_pre, 2))
+        if side_depth:
+            b["side_depths"].append(round(side_depth, 2))
+        if spend_pre and side_depth and side_depth > 0:
+            # Correct ratio: what fraction of real book depth are we trying to deploy?
+            b["spend_vs_depth_ratios"].append(round(spend_pre / side_depth, 2))
         if spend_pre and depth_cap and depth_cap > 0:
-            b["spend_depth_ratios"].append(round(spend_pre / depth_cap, 2))
+            # Cap pressure: how hard did the 25%-cap have to work?
+            b["cap_pressure_ratios"].append(round(spend_pre / depth_cap, 2))
+
+    def _avg(lst):
+        return round(sum(lst) / len(lst), 2) if lst else None
 
     # Summarise buckets
     bucket_summary = {}
@@ -3527,16 +3551,18 @@ def stats_reliability():
             "lost": b["lost"],
             "pending": b["pending"],
             "win_rate_pct": round(100 * b["won"] / n_resolved, 1) if n_resolved else None,
-            "avg_ev_gate_delta_pp": round(sum(b["ev_gate_deltas"]) / len(b["ev_gate_deltas"]), 2)
-                                    if b["ev_gate_deltas"] else None,
-            "avg_spend_depth_ratio": round(sum(b["spend_depth_ratios"]) / len(b["spend_depth_ratios"]), 2)
-                                     if b["spend_depth_ratios"] else None,
+            "avg_ev_gate_delta_pp": _avg(b["ev_gate_deltas"]),
+            # Depth metrics (correct formulas)
+            "avg_spend_pre_cap_usd": _avg(b["spend_pre_caps"]),
+            "avg_side_depth_usd": _avg(b["side_depths"]),
+            "avg_spend_vs_depth_ratio": _avg(b["spend_vs_depth_ratios"]),   # <1.0 is good
+            "avg_cap_pressure_ratio": _avg(b["cap_pressure_ratios"]),       # how hard cap worked
         }
 
     return jsonify({
         "ok": True,
         "boot_id": BOOT_ID,
-        "note": "win_rate requires resolved trades — pending means unresolved",
+        "note": "win_rate requires resolved trades — pending means unresolved. spend_vs_depth_ratio: <1.0 means within visible book depth. cap_pressure_ratio: >1.0 means depth cap fired.",
         "overall": overall,
         "by_reliability_bucket": bucket_summary,
         "trade_source_counts": dict(source_counts),
