@@ -2562,6 +2562,7 @@ def _run_auto_trade_cycle():
                 "question": sig.get("question", "")[:80],
                 "city": sig.get("city", ""),
                 "signal": sig_type,
+                "trade_source": "main_loop",
                 "token_id": token_id,
                 "price": price, "size": size,
                 "ev": sig.get("theo_ev", 0),
@@ -2719,6 +2720,7 @@ def _run_auto_trade_cycle():
                                     'ts': datetime.now(timezone.utc).isoformat(),
                                     'question': _no_opp.get('question', f"NO harvest: {_city}")[:80],
                                     'city': _city, 'signal': 'NO_HARVEST',
+                                    'trade_source': 'agent',
                                     'token_id': _no_tok, 'price': _no_px, 'size': _no_sz,
                                     'ev': _exp, 'ev_dollar': _exp, 'our_prob': _oprob,
                                     'mkt_price': round(_no_px * 100, 1), 'mode': 'PAPER',
@@ -2938,6 +2940,7 @@ def _run_auto_trade_cycle():
                                 'ts': datetime.now(timezone.utc).isoformat(),
                                 'question': _at.get('question', '')[:80],
                                 'city': _at_city, 'signal': _at_sig,
+                                'trade_source': 'agent',
                                 'token_id': _at_tok, 'price': _at_px, 'size': _at_sz,
                                 'ev': _at_edge, 'ev_dollar': _at.get('ev', 0),
                                 'our_prob': _at_oprob, 'mkt_price': _at.get('market_price', 0),
@@ -3413,6 +3416,133 @@ def trades_latest_db_main():
     })
 
 
+@app.route("/api/stats/reliability")
+def stats_reliability():
+    """Station reliability measurement and tuning metrics.
+
+    Returns:
+    - win_rate by ev_addon_reasons bucket (LOW_N, NOISY, DRIFT, clean)
+    - avg spend_vs_depth_ratio per bucket (spend_pre_cap / depth_cap_value_usd)
+    - avg ev_gate_delta per bucket (min_ev_final_pp - min_ev_base_pp)
+    - trade_source breakdown counts
+    - overall win/loss/pending counts
+    """
+    if not HAS_LEDGER:
+        return jsonify({"ok": False, "error": "ledger not available"}), 503
+    import sqlite3 as _sq, json as _json
+    from collections import defaultdict
+    try:
+        import trade_ledger as _tl
+        conn = _sq.connect(_tl.DB_PATH, check_same_thread=False)
+        conn.row_factory = _sq.Row
+        rows = conn.execute("SELECT * FROM trades ORDER BY id DESC LIMIT 500").fetchall()
+        conn.close()
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 500
+
+    buckets = defaultdict(lambda: {"trades": 0, "won": 0, "lost": 0, "pending": 0,
+                                    "ev_gate_deltas": [], "spend_depth_ratios": []})
+    source_counts = defaultdict(int)
+    overall = {"trades": 0, "won": 0, "lost": 0, "pending": 0}
+
+    for row in rows:
+        d = dict(row)
+        raw_meta = d.get("meta") or "{}"
+        try:
+            m = _json.loads(raw_meta)
+        except Exception:
+            m = {}
+
+        # trade_source — explicit field (new) or infer from signal (old trades)
+        source = m.get("trade_source") or d.get("signal", "")
+        if source not in ("main_loop", "agent", "exit_engine"):
+            sig = d.get("signal", "")
+            if sig in ("BUY YES", "BUY NO"):
+                source = "main_loop"
+            elif sig.startswith("EXIT"):
+                source = "exit_engine"
+            else:
+                source = "agent"
+        source_counts[source] += 1
+
+        won = d.get("won")
+        overall["trades"] += 1
+        if won == 1:
+            overall["won"] += 1
+        elif won == 0:
+            overall["lost"] += 1
+        else:
+            overall["pending"] += 1
+
+        # Only bucket main_loop trades — those are the ones with reliability knobs
+        if source != "main_loop":
+            continue
+
+        # Determine bucket from ev_addon_reasons
+        reasons = m.get("ev_addon_reasons") or []
+        if isinstance(reasons, str):
+            try:
+                reasons = _json.loads(reasons)
+            except Exception:
+                reasons = [reasons] if reasons else []
+        if not reasons:
+            bucket_key = "clean"
+        elif "DRIFT" in reasons:
+            bucket_key = "DRIFT"
+        elif "NOISY" in reasons:
+            bucket_key = "NOISY"
+        elif "LOW_N" in reasons:
+            bucket_key = "LOW_N"
+        else:
+            bucket_key = "+".join(sorted(reasons))
+
+        b = buckets[bucket_key]
+        b["trades"] += 1
+        if won == 1:
+            b["won"] += 1
+        elif won == 0:
+            b["lost"] += 1
+        else:
+            b["pending"] += 1
+
+        # EV gate delta: how much did reliability raise the gate?
+        base = m.get("min_ev_base_pp", 0)
+        final = m.get("min_ev_final_pp", 0)
+        if base and final:
+            b["ev_gate_deltas"].append(round(final - base, 2))
+
+        # Spend vs depth ratio: how much of available depth did we use?
+        spend_pre = m.get("spend_pre_cap", 0)
+        depth_cap = m.get("depth_cap_value_usd", 0)
+        if spend_pre and depth_cap and depth_cap > 0:
+            b["spend_depth_ratios"].append(round(spend_pre / depth_cap, 2))
+
+    # Summarise buckets
+    bucket_summary = {}
+    for k, b in buckets.items():
+        n_resolved = b["won"] + b["lost"]
+        bucket_summary[k] = {
+            "trades": b["trades"],
+            "won": b["won"],
+            "lost": b["lost"],
+            "pending": b["pending"],
+            "win_rate_pct": round(100 * b["won"] / n_resolved, 1) if n_resolved else None,
+            "avg_ev_gate_delta_pp": round(sum(b["ev_gate_deltas"]) / len(b["ev_gate_deltas"]), 2)
+                                    if b["ev_gate_deltas"] else None,
+            "avg_spend_depth_ratio": round(sum(b["spend_depth_ratios"]) / len(b["spend_depth_ratios"]), 2)
+                                     if b["spend_depth_ratios"] else None,
+        }
+
+    return jsonify({
+        "ok": True,
+        "boot_id": BOOT_ID,
+        "note": "win_rate requires resolved trades — pending means unresolved",
+        "overall": overall,
+        "by_reliability_bucket": bucket_summary,
+        "trade_source_counts": dict(source_counts),
+    })
+
+
 def _start_position_monitor():
     """Monitor open positions every 5 min, exit losers via active_trader rules."""
     import threading
@@ -3495,6 +3625,7 @@ def _start_position_monitor():
                                     'question': f"EXIT: {action.get('city', '')} | {action.get('reason', '')}",
                                     'city': action.get("city", ""),
                                     'signal': f"EXIT_{action.get('action', 'SELL')}",
+                                    'trade_source': 'exit_engine',
                                     'token_id': action.get("token_id", ""),
                                     'price': _exit_price, 'size': _size,
                                     'ev': 0, 'ev_dollar': 0,
