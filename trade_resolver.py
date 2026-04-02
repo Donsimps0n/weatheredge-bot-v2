@@ -339,10 +339,8 @@ def resolve_trades(force: bool = False) -> dict:
         spend     = float(trade.get("spend", 0))
         city      = trade.get("city", "")
 
-        if not token_id:
-            continue
-
         # EXIT trades are position closures — auto-resolve with pnl=0
+        # Must check BEFORE token_id gate since EXIT trades often have empty token_ids
         if signal == "EXIT_SELL_ALL" or signal.startswith("EXIT"):
             try:
                 trade_ledger.mark_resolved(
@@ -355,6 +353,9 @@ def resolve_trades(force: bool = False) -> dict:
             except Exception as exc:
                 log.error("trade_resolver: EXIT mark_resolved failed for #%d: %s", trade_id, exc)
                 summary["errors"].append(f"#{trade_id}: {exc}")
+            continue
+
+        if not token_id:
             continue
 
         resolution = _lookup_resolution(
