@@ -3132,6 +3132,24 @@ def _run_auto_trade_cycle():
                 trade_ledger.record_cycle(len(sigs), len(tradeable), traded, _top, _topev)
             except Exception:
                 pass
+
+        # ── Trade resolver: settle open trades against Polymarket outcomes ────
+        # Called every cycle but self-throttles to once per hour internally.
+        try:
+            from trade_resolver import resolve_trades as _resolve_trades
+            _resolver_result = _resolve_trades()
+            if _resolver_result.get("ran"):
+                _rc = _resolver_result.get("resolved_count", 0)
+                if _rc > 0:
+                    logger.info("RESOLVER_RUN: settled %d trades — W=%d L=%d PnL=$%.2f",
+                                _rc, _resolver_result.get("wins", 0),
+                                _resolver_result.get("losses", 0),
+                                _resolver_result.get("total_pnl", 0))
+                else:
+                    logger.info("RESOLVER_RUN: checked unresolved trades, 0 newly resolved")
+        except Exception as _res_err:
+            logger.warning("trade_resolver error: %s", _res_err)
+
     except Exception as exc:
         import traceback as _tb
         _tb_str = _tb.format_exc()
