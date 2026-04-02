@@ -2607,6 +2607,9 @@ def _run_auto_trade_cycle():
                 "spend_pre_cap": round(_spend_pre_cap, 2),
                 # Meta-proof flag — present only when dedupe was bypassed for this trade
                 "meta_proof_bypass": _this_sig_is_proof_bypass,
+                # Cohort tracking: separate pre/post calibration fix results
+                "boot_id": BOOT_ID,
+                "calibration_v": 2,  # v1=uncapped ensemble, v2=sigma floor 1.5 + 45% cap
             }
             if cfg["paper_mode"]:
                 trade_info["mode"] = "PAPER"
@@ -3585,6 +3588,47 @@ def stats_reliability():
             "avg_cap_pressure_ratio": _avg(b["cap_pressure_ratios"]),       # how hard cap worked
         }
 
+    # ── Post-fix cohort: trades with calibration_v >= 2 (sigma floor + 45% cap) ──
+    _postfix = {"trades": 0, "won": 0, "lost": 0, "pending": 0,
+                "avg_our_prob": None, "avg_mkt_price": None, "avg_edge": None}
+    _postfix_probs = []
+    _postfix_mkts = []
+    for row in rows:
+        d = dict(row)
+        raw_meta = d.get("meta", "")
+        try:
+            mx = _json.loads(raw_meta) if raw_meta else {}
+        except Exception:
+            mx = {}
+        if mx.get("calibration_v", 0) < 2:
+            continue
+        sig = d.get("signal", mx.get("signal", ""))
+        if sig not in ("BUY YES", "BUY NO", "YES"):
+            continue
+        _postfix["trades"] += 1
+        w = d.get("won")
+        if w == 1:
+            _postfix["won"] += 1
+        elif w == 0:
+            _postfix["lost"] += 1
+        else:
+            _postfix["pending"] += 1
+        op = mx.get("our_prob") or d.get("our_prob")
+        mp = mx.get("mkt_price") or d.get("mkt_price")
+        if op is not None:
+            _postfix_probs.append(float(op))
+        if mp is not None:
+            _postfix_mkts.append(float(mp) * 100 if float(mp) < 1 else float(mp))
+    if _postfix_probs:
+        _postfix["avg_our_prob"] = round(sum(_postfix_probs) / len(_postfix_probs), 1)
+    if _postfix_mkts:
+        _postfix["avg_mkt_price"] = round(sum(_postfix_mkts) / len(_postfix_mkts), 1)
+    if _postfix_probs and _postfix_mkts and len(_postfix_probs) == len(_postfix_mkts):
+        edges = [p - m for p, m in zip(_postfix_probs, _postfix_mkts)]
+        _postfix["avg_edge"] = round(sum(edges) / len(edges), 1)
+    _n_pf = _postfix["won"] + _postfix["lost"]
+    _postfix["win_rate_pct"] = round(100 * _postfix["won"] / _n_pf, 1) if _n_pf else None
+
     return jsonify({
         "ok": True,
         "boot_id": BOOT_ID,
@@ -3592,6 +3636,7 @@ def stats_reliability():
         "overall": overall,
         "by_reliability_bucket": bucket_summary,
         "trade_source_counts": dict(source_counts),
+        "postfix_cohort": _postfix,
     })
 
 
