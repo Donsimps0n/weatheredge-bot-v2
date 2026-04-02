@@ -1259,6 +1259,9 @@ def _build_signals(weather_markets, weather_cities):
                     )
                     our_prob = round(_ens_prob * 100, 1)
                     our_prob = max(0.1, min(99.9, our_prob))
+                    # Hard cap: exact bins can't exceed 45% (ensemble calibration guard)
+                    if p["direction"] == "exact":
+                        our_prob = min(our_prob, 45.0)
                     # Extract ftemp for display (use ensemble mean)
                     ftemp = _ens_fc.ensemble_mean if _ens_fc.n_ensemble_members > 0 else _ens_fc.multimodel_mean
                     sigma = _ens_fc.blended_sigma
@@ -1319,6 +1322,9 @@ def _build_signals(weather_markets, weather_cities):
                 z = (p["threshold_c"] - ftemp) / sigma
                 our_prob = round(_ncdf(z) * 100, 1)
             our_prob = max(0.1, min(99.9, our_prob))
+            # Hard cap: no single exact bin should exceed 45%
+            if p["direction"] == "exact":
+                our_prob = min(our_prob, 45.0)
         # Use real market price from tokens
         _tkns = mkt.get('tokens', [])
         _yes_mp = 0

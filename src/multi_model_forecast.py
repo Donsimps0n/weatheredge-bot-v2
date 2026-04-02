@@ -387,7 +387,10 @@ def _compute_stats(fc: EnsembleForecast):
         iqr = fc.ensemble_p75 - fc.ensemble_p25
         iqr_sigma = iqr / 1.35  # IQR → sigma for normal distribution
         # Use the larger of std and IQR-sigma (captures fat tails)
-        fc.blended_sigma = max(fc.ensemble_std, iqr_sigma, 0.5)
+        # Floor at 1.5°C: ensemble spread systematically underestimates real
+        # forecast uncertainty due to shared model physics. Historical day-ahead
+        # high temp RMSE is 1.5-3.0°C even when ensemble spread is < 0.5°C.
+        fc.blended_sigma = max(fc.ensemble_std, iqr_sigma, 1.5)
         fc.data_quality = "good"
     elif fc.n_models >= 3:
         # Fallback to multi-model spread (wider because models are independent)
@@ -523,6 +526,39 @@ def ensemble_bin_probability(
             blended = min(blended, 0.005)
             log.debug("KDE_CLAMP: %s threshold=%.1f outside members [%.1f, %.1f]+/-%.1f → clamped to %.3f",
                        fc.city, threshold_c, _member_min, _member_max, _buffer, blended)
+
+    # ── CALIBRATION GUARD: ensemble clustering ≠ forecast certainty ──────
+    # NWP ensembles share model physics → correlated errors → ensemble spread
+    # systematically underestimates real uncertainty. Historical RMSE for
+    # day-ahead high temps is 1.5-3.0°C, but ensemble spread can be < 0.5°C.
+    #
+    # Fix: blend ensemble probability with a Gaussian estimate using the
+    # verified RMSE-based sigma (minimum 1.5°C for exact bins). This prevents
+    # the model from claiming >50% on any single 1°C bin.
+    if direction == "exact" and blended > 0.30:
+        _verified_sigma = max(fc.blended_sigma, 1.5)  # floor at 1.5°C (historical RMSE)
+        _mean = sum(members) / len(members) if members else (fc.ensemble_mean or 20.0)
+        _conservative_prob = _gaussian_bin_prob(
+            _mean, _verified_sigma, threshold_c, direction, bin_width_c,
+        )
+        # Blend: cap at 60/40 ensemble/conservative when ensemble is very confident
+        # This still trusts the ensemble but prevents extreme overconfidence
+        _ensemble_overconfidence = max(0.0, (blended - 0.30) / 0.70)  # 0→1 as blended goes 30%→100%
+        _conservative_weight = min(0.50, _ensemble_overconfidence * 0.50)
+        _old_blended = blended
+        blended = blended * (1 - _conservative_weight) + _conservative_prob * _conservative_weight
+        log.info(
+            "CALIBRATION_GUARD: %s bin=%.1f%s ens_prob=%.1f%% → blended=%.1f%% "
+            "(conservative=%.1f%%, weight=%.0f%%, verified_sigma=%.1f)",
+            fc.city, threshold_c, "°C", _old_blended * 100, blended * 100,
+            _conservative_prob * 100, _conservative_weight * 100, _verified_sigma,
+        )
+
+    # Hard cap: no single exact bin should exceed 45% probability.
+    # Even the best day-ahead forecasts can't be >45% certain about a 1°C bin
+    # when the temperature distribution has 7+ possible outcomes.
+    if direction == "exact":
+        blended = min(blended, 0.45)
 
     # Clamp to reasonable range
     return max(0.001, min(0.999, blended))
