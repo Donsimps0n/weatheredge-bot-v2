@@ -245,13 +245,34 @@ def should_exit_position(city, bin_lo, bin_hi, entry_price, current_price,
             log.info('HOLD_OVERRIDE: %s | ratio=%.0f%% but our_prob=%.1f%% — model says hold', city, ratio*100, our_prob)
             return False, f'HOLD_OVERRIDE: market says {ratio*100:.0f}% but model={our_prob:.1f}% — trusting forecast', 'HOLD'
 
-    # ── Profit taking ──
+    # ── Layer 5: MOMENTUM PROFIT-TAKING ──
+    # Capture price movement profits — don't hold winners to resolution if the
+    # market has already moved heavily in our favor. This is the "flow" edge:
+    # buy cheap → price moves up → take profit before resolution risk.
     if entry_cost > 0:
         ratio = current_value / entry_cost
-        if ratio > 3.0:
-            return True, f'PROFIT_TAKE_3X: value at {ratio:.1f}x entry', 'SELL_HALF'
-        if ratio > 2.0 and mins_to_resolution < 240:
-            return True, f'PROFIT_TAKE_2X: value at {ratio:.1f}x entry, <4h left', 'SELL_HALF'
+
+        # ── Exact bins: aggressive profit-taking ──
+        # Exact bins have high resolution risk (~60-70% lose). Take profits early.
+        _is_exact = direction == "exact" or (not direction and entry_price < 0.30)
+        if _is_exact:
+            if ratio > 2.0:
+                return True, f'MOMENTUM_EXACT_2X: value at {ratio:.1f}x entry — lock exact-bin profit', 'SELL_ALL'
+            if ratio > 1.5 and mins_to_resolution < 360:
+                return True, f'MOMENTUM_EXACT_1.5X: value at {ratio:.1f}x, <6h left — take it', 'SELL_HALF'
+
+        # ── Above/below bins: patient profit-taking ──
+        # These have higher base WR, so we can afford to hold longer.
+        else:
+            if ratio > 3.0:
+                return True, f'PROFIT_TAKE_3X: value at {ratio:.1f}x entry', 'SELL_HALF'
+            if ratio > 2.0 and mins_to_resolution < 240:
+                return True, f'PROFIT_TAKE_2X: value at {ratio:.1f}x entry, <4h left', 'SELL_HALF'
+
+        # ── Universal: very late profit lock ──
+        # Near resolution with ANY profit — lock it in
+        if ratio > 1.3 and mins_to_resolution < 60:
+            return True, f'LATE_PROFIT_LOCK: {ratio:.1f}x entry, {mins_to_resolution:.0f}min left — secure gains', 'SELL_ALL'
 
     return False, 'HOLD', 'HOLD'
 

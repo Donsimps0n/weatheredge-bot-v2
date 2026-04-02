@@ -2274,7 +2274,14 @@ def _run_auto_trade_cycle():
             _ev_bump = 0.0 if _is_proof_city else _MIN_EV_BUMP.get(_dq, 0)
             # Knob C: station reliability EV addon (from bias agent)
             _ev_bump += _s.get("ev_addon", 0)
-            _s["_min_ev_adj"] = max(cfg["min_ev"], cfg["min_ev"] + _ev_bump)
+            # Direction-aware EV gate: exact bins need higher bar (harder to win),
+            # above/below bins are easier to get right → lower bar to capture more.
+            _dir = _s.get("direction", "exact")
+            if _dir == "exact":
+                _dir_base = max(cfg["min_ev"], 8.0)  # exact: 8pp minimum (up from 5)
+            else:
+                _dir_base = max(cfg["min_ev"] - 2.0, 3.0)  # above/below: 3pp minimum
+            _s["_min_ev_adj"] = max(_dir_base, _dir_base + _ev_bump)
             _s["_kelly_mult"] = 1.0 if _is_proof_city else _KELLY_MULT.get(_dq, 1.0)
             if _dq == "partial" and not _is_proof_city:
                 _s["kelly"] = round(_s.get("kelly", 0) * 0.6, 1)
@@ -2580,6 +2587,7 @@ def _run_auto_trade_cycle():
                 "clob_spread": _clob_info.get("spread_pct", 0) if _clob_info else None,
                 "clob_edge_at_fill": _clob_info.get("edge_at_fill", 0) if _clob_info else None,
                 "data_quality": sig.get("data_quality", "good"),
+                "direction": sig.get("direction", "exact"),  # exact / above / below
                 # Rich meta for post-mortem analysis (flows into ledger meta JSON)
                 "edge_pp": sig.get("theo_ev", 0),
                 "spread_pct": _clob_info.get("spread_pct", 0) if _clob_info else None,
@@ -3593,6 +3601,11 @@ def stats_reliability():
                 "avg_our_prob": None, "avg_mkt_price": None, "avg_edge": None}
     _postfix_probs = []
     _postfix_mkts = []
+    # Direction breakdown: separate exact vs above/below performance
+    _by_dir = {
+        "exact": {"trades": 0, "won": 0, "lost": 0, "pending": 0, "_probs": [], "_mkts": []},
+        "above_below": {"trades": 0, "won": 0, "lost": 0, "pending": 0, "_probs": [], "_mkts": []},
+    }
     for row in rows:
         d = dict(row)
         raw_meta = d.get("meta", "")
@@ -3619,6 +3632,17 @@ def stats_reliability():
             _postfix_probs.append(float(op))
         if mp is not None:
             _postfix_mkts.append(float(mp) * 100 if float(mp) < 1 else float(mp))
+        # Direction tracking
+        _dir = mx.get("direction", "")
+        _dir_key = "exact" if _dir == "exact" else "above_below"
+        _bd = _by_dir[_dir_key]
+        _bd["trades"] += 1
+        if w == 1: _bd["won"] += 1
+        elif w == 0: _bd["lost"] += 1
+        else: _bd["pending"] += 1
+        if op is not None: _bd["_probs"].append(float(op))
+        if mp is not None: _bd["_mkts"].append(float(mp) * 100 if float(mp) < 1 else float(mp))
+
     if _postfix_probs:
         _postfix["avg_our_prob"] = round(sum(_postfix_probs) / len(_postfix_probs), 1)
     if _postfix_mkts:
@@ -3629,6 +3653,16 @@ def stats_reliability():
     _n_pf = _postfix["won"] + _postfix["lost"]
     _postfix["win_rate_pct"] = round(100 * _postfix["won"] / _n_pf, 1) if _n_pf else None
 
+    # Finalize direction breakdown
+    for _dk, _dv in _by_dir.items():
+        _np = _dv.pop("_probs")
+        _nm = _dv.pop("_mkts")
+        _nr = _dv["won"] + _dv["lost"]
+        _dv["win_rate_pct"] = round(100 * _dv["won"] / _nr, 1) if _nr else None
+        _dv["avg_our_prob"] = round(sum(_np) / len(_np), 1) if _np else None
+        _dv["avg_mkt_price"] = round(sum(_nm) / len(_nm), 1) if _nm else None
+    _postfix["by_direction"] = _by_dir
+
     return jsonify({
         "ok": True,
         "boot_id": BOOT_ID,
@@ -3637,6 +3671,228 @@ def stats_reliability():
         "by_reliability_bucket": bucket_summary,
         "trade_source_counts": dict(source_counts),
         "postfix_cohort": _postfix,
+    })
+
+
+@app.route("/api/stats/bin_errors")
+def stats_bin_errors():
+    """Adjacent-bin error analysis: compare predicted vs actual winning bins.
+
+    For each resolved main_loop trade, determine:
+    - What bin did we predict (from the trade's question)?
+    - What bin actually won (from the Gamma resolved event)?
+    - How far off were we (in °C or °F)?
+
+    Classifies errors: HIT (0), ADJACENT (±1 bin), NEAR (±2), WILD (>2).
+    This tells us whether losses are calibration errors (fixable) or
+    forecast errors (fundamental problem).
+    """
+    if not HAS_LEDGER:
+        return jsonify({"ok": False, "error": "ledger not available"}), 503
+    import sqlite3 as _sq, json as _json, re as _re2
+    from collections import defaultdict
+
+    # ── Step 1: Fetch resolved main_loop trades ──
+    try:
+        import trade_ledger as _tl
+        conn = _sq.connect(_tl.DB_PATH, check_same_thread=False)
+        conn.row_factory = _sq.Row
+        rows = conn.execute(
+            "SELECT * FROM trades WHERE resolved = 'yes' AND won IS NOT NULL "
+            "ORDER BY id DESC LIMIT 500"
+        ).fetchall()
+        conn.close()
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 500
+
+    _agent_signals = {"SNIPE_YES", "SNIPE_NO", "NO_HARVEST", "EXIT_SELL_ALL",
+                      "GFS_DELTA_YES", "GFS_DELTA_NO", "OBS_CONFIRM_YES", "OBS_CONFIRM_NO",
+                      "OBS_KILL_NO", "HEDGE_YES", "HEDGE_NO", "YES_HARVEST"}
+
+    # ── Step 2: Build resolution map from Gamma for winning bins ──
+    _winning_bins = {}  # "city|date" → winning_threshold_c
+    try:
+        from trade_resolver import _build_resolution_maps
+        full_map, _, question_map = _build_resolution_maps()
+        # Build event-level winning bin lookup from question_map
+        for q_key, entry in question_map.items():
+            if entry.get("yes_won"):
+                _winning_bins[q_key] = entry.get("bin_label", "")
+    except Exception as exc:
+        logger.warning("bin_errors: could not build resolution maps: %s", exc)
+
+    # ── Step 3: Parse each trade and compute error ──
+    def _parse_threshold_from_question(q: str):
+        """Extract threshold temperature from question text.
+        Examples: 'be 24°C' → 24.0, 'between 68-69°F' → 68.5, 'above 80°F' → 80.0
+        """
+        q_lower = q.lower()
+        # Exact °C: "be 24°C"
+        m = _re2.search(r'be\s+(\d+)\s*°?\s*c\b', q_lower)
+        if m:
+            return float(m.group(1)), "exact", "C"
+        # Range °F: "between 68-69°F"  or "between 68–69°F"
+        m = _re2.search(r'between\s+(\d+)\s*[-–]\s*(\d+)\s*°?\s*f', q_lower)
+        if m:
+            mid = (float(m.group(1)) + float(m.group(2))) / 2.0
+            return mid, "exact", "F"
+        # Exact °F: "be 80°F"
+        m = _re2.search(r'be\s+(\d+)\s*°?\s*f\b', q_lower)
+        if m:
+            return float(m.group(1)), "exact", "F"
+        # Above: "above 80°F" or "above 24°C"
+        m = _re2.search(r'above\s+(\d+)\s*°?\s*([cf])', q_lower)
+        if m:
+            return float(m.group(1)), "above", m.group(2).upper()
+        # Below: "below 60°F"
+        m = _re2.search(r'below\s+(\d+)\s*°?\s*([cf])', q_lower)
+        if m:
+            return float(m.group(1)), "below", m.group(2).upper()
+        return None, None, None
+
+    def _parse_bin_label(label: str):
+        """Parse a winning bin label like '24°C', '68-69°F', 'Above 80°F'."""
+        label_l = label.lower().strip()
+        # Range: "68-69°F"
+        m = _re2.search(r'(\d+)\s*[-–]\s*(\d+)\s*°?\s*([cf])', label_l)
+        if m:
+            mid = (float(m.group(1)) + float(m.group(2))) / 2.0
+            return mid, m.group(3).upper()
+        # Single: "24°C" or "80°F"
+        m = _re2.search(r'(\d+)\s*°?\s*([cf])', label_l)
+        if m:
+            return float(m.group(1)), m.group(2).upper()
+        return None, None
+
+    def _to_celsius(val, unit):
+        if unit == "F":
+            return (val - 32) * 5.0 / 9.0
+        return val
+
+    results = []
+    totals = {"hit": 0, "adjacent": 0, "near": 0, "wild": 0, "unparsed": 0}
+    by_city = defaultdict(lambda: {"hit": 0, "adjacent": 0, "near": 0, "wild": 0, "errors_c": []})
+    by_direction = defaultdict(lambda: {"hit": 0, "adjacent": 0, "near": 0, "wild": 0})
+    all_errors = []
+
+    for row in rows:
+        d = dict(row)
+        sig = d.get("signal", "")
+        if sig in _agent_signals:
+            continue
+
+        question = d.get("question", "")
+        city = d.get("city", "")
+        won = d.get("won")
+
+        # Parse what we predicted
+        pred_val, pred_dir, pred_unit = _parse_threshold_from_question(question)
+        if pred_val is None:
+            totals["unparsed"] += 1
+            continue
+
+        pred_c = _to_celsius(pred_val, pred_unit)
+
+        # Find the winning bin for this event
+        # Normalize question for lookup
+        q_norm = _re2.sub(r"[^a-z0-9 ]", "", question.lower()).strip()
+
+        # Try to find the winning bin from our resolution maps
+        # We need to look at the EVENT level, not individual market
+        # Extract city + date from question for matching
+        actual_val = None
+        actual_unit = pred_unit  # assume same unit
+
+        # Search through winning bins for a match from same event
+        # The question_map keys are normalized questions — the winning one has yes_won=True
+        # We need to find ALL markets in the same event and see which one won
+        # For now, use the won/lost status directly:
+        # If won=True, OUR bin was the winner → error = 0
+        # If won=False, we need to find which bin DID win
+
+        if won == 1:
+            # We picked the right bin
+            error_c = 0.0
+            category = "hit"
+        else:
+            # We lost — try to find which bin won from the resolution maps
+            # Look for winning bins from same city+date
+            _date_match = _re2.search(r'((?:january|february|march|april|may|june|july|august|september|october|november|december)\s+\d+)', question.lower())
+            _date_str = _date_match.group(1) if _date_match else ""
+            _city_lower = city.lower()
+
+            # Search question_map for winning bin from same city+date
+            _found_winner = None
+            for qk, qv in _winning_bins.items():
+                if _city_lower in qk and _date_str in qk and qv:
+                    _found_winner = qv
+                    break
+
+            if _found_winner:
+                actual_val, actual_unit_parsed = _parse_bin_label(_found_winner)
+                if actual_val is not None:
+                    actual_c = _to_celsius(actual_val, actual_unit_parsed or pred_unit)
+                    error_c = actual_c - pred_c
+                else:
+                    totals["unparsed"] += 1
+                    continue
+            else:
+                # Can't find winning bin — skip
+                totals["unparsed"] += 1
+                continue
+
+            abs_err = abs(error_c)
+            if abs_err < 0.5:
+                category = "hit"
+            elif abs_err <= 1.5:
+                category = "adjacent"
+            elif abs_err <= 3.0:
+                category = "near"
+            else:
+                category = "wild"
+
+        totals[category] += 1
+        all_errors.append(error_c)
+        by_city[city][category] += 1
+        by_city[city]["errors_c"].append(round(error_c, 1))
+        by_direction[pred_dir or "unknown"][category] += 1
+
+        results.append({
+            "city": city,
+            "question": question[:60],
+            "won": bool(won),
+            "predicted_c": round(pred_c, 1),
+            "error_c": round(error_c, 1),
+            "category": category,
+        })
+
+    # Compute summary stats
+    _n = len(all_errors)
+    _avg_err = round(sum(all_errors) / _n, 2) if _n else None
+    _avg_abs_err = round(sum(abs(e) for e in all_errors) / _n, 2) if _n else None
+
+    # Per-city bias (systematic over/under)
+    _city_bias = {}
+    for c, info in by_city.items():
+        errs = info.pop("errors_c", [])
+        if len(errs) >= 3:
+            _city_bias[c] = round(sum(errs) / len(errs), 2)
+        info["n_trades"] = sum(info[k] for k in ("hit", "adjacent", "near", "wild"))
+
+    return jsonify({
+        "ok": True,
+        "boot_id": BOOT_ID,
+        "note": "HIT=correct bin, ADJACENT=1 bin off (~1°C), NEAR=2 bins off, WILD=>2 bins off. "
+                "If most losses are ADJACENT, sigma is too tight (fixable). "
+                "If WILD, forecast signal is weak for that city.",
+        "total_analyzed": _n,
+        "totals": totals,
+        "avg_error_c": _avg_err,
+        "avg_abs_error_c": _avg_abs_err,
+        "by_city": dict(by_city),
+        "by_direction": dict(by_direction),
+        "systematic_city_bias_c": _city_bias,
+        "trades": results[:50],  # cap at 50 for response size
     })
 
 
