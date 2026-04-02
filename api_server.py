@@ -1743,6 +1743,7 @@ _auto_trade_config = {
 _paper_trades = []
 _traded_tokens = set()
 _trade_cycle_log = []  # Cycle log for /api/trade-debug monitoring
+_last_resolver_result = None  # Last trade_resolver output for /api/resolver/status
 
 # ── Meta-proof mode (DISABLED) ───────────────────────────────────────────────
 # Set META_PROOF_CITY = "" to disable. Was used as a one-shot debug bypass
@@ -3140,13 +3141,14 @@ def _run_auto_trade_cycle():
             _resolver_result = _resolve_trades()
             if _resolver_result.get("ran"):
                 _rc = _resolver_result.get("resolved_count", 0)
-                if _rc > 0:
-                    logger.info("RESOLVER_RUN: settled %d trades — W=%d L=%d PnL=$%.2f",
-                                _rc, _resolver_result.get("wins", 0),
-                                _resolver_result.get("losses", 0),
-                                _resolver_result.get("total_pnl", 0))
-                else:
-                    logger.info("RESOLVER_RUN: checked unresolved trades, 0 newly resolved")
+                _mm = _resolver_result.get("match_methods", {})
+                logger.info("RESOLVER_RUN: resolved=%d W=%d L=%d PnL=$%.2f matches=%s",
+                            _rc, _resolver_result.get("wins", 0),
+                            _resolver_result.get("losses", 0),
+                            _resolver_result.get("total_pnl", 0), _mm)
+                _resolver_result["ran_at"] = datetime.now(timezone.utc).isoformat()
+                global _last_resolver_result
+                _last_resolver_result = _resolver_result
         except Exception as _res_err:
             logger.warning("trade_resolver error: %s", _res_err)
 
@@ -3860,6 +3862,43 @@ def trade_debug():
         "weather_markets": len(_state.get("weather_markets", [])),
         "weather_cities": len(_weather_cache["data"].get("cities", []) if _weather_cache["data"] else []),
     })
+
+@app.route("/api/resolver/status")
+def resolver_status():
+    """Show last resolver run result + unresolved trade breakdown by city."""
+    try:
+        unresolved = trade_ledger.get_unresolved_trades() if HAS_LEDGER else []
+        by_city = {}
+        for t in unresolved:
+            c = t.get("city", "unknown")
+            by_city[c] = by_city.get(c, 0) + 1
+        return jsonify({
+            "ok": True,
+            "last_run": _last_resolver_result,
+            "unresolved_total": len(unresolved),
+            "unresolved_by_city": dict(sorted(by_city.items(), key=lambda x: -x[1])),
+        })
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+@app.route("/api/resolver/run", methods=["POST"])
+def resolver_run():
+    """Manually trigger the trade resolver (bypasses hourly throttle)."""
+    global _last_resolver_result
+    try:
+        from trade_resolver import resolve_trades as _resolve_trades
+        result = _resolve_trades(force=True)
+        result["ran_at"] = datetime.now(timezone.utc).isoformat()
+        _last_resolver_result = result
+        logger.info("RESOLVER_MANUAL: resolved=%d W=%d L=%d PnL=$%.2f matches=%s",
+                     result.get("resolved_count", 0), result.get("wins", 0),
+                     result.get("losses", 0), result.get("total_pnl", 0),
+                     result.get("match_methods", {}))
+        return jsonify({"ok": True, "result": result})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
 
 @app.route("/api/exit-strategy")
 def exit_strategy():
