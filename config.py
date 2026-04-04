@@ -21,7 +21,7 @@ CITIES: List[Dict[str, any]] = [
     {"city": "Chicago", "icao": "KORD", "lat": 41.8781, "lon": -87.6298, "coastal": False, "country": "USA", "timezone": "America/Chicago"},
     {"city": "Miami", "icao": "KMIA", "lat": 25.7617, "lon": -80.1918, "coastal": True, "country": "USA", "timezone": "America/New_York"},
     {"city": "Dallas", "icao": "KDFW", "lat": 32.8753, "lon": -97.0208, "coastal": False, "country": "USA", "timezone": "America/Chicago"},
-    {"city": "Denver", "icao": "KDEN", "lat": 39.7392, "lon": -104.9903, "coastal": False, "country": "USA", "timezone": "America/Denver"},
+    {"city": "Denver", "icao": "KBKF", "lat": 39.7170, "lon": -104.7519, "coastal": False, "country": "USA", "timezone": "America/Denver"},  # Buckley SFB — Polymarket resolution station (NOT KDEN)
     {"city": "Seattle", "icao": "KSEA", "lat": 47.6062, "lon": -122.3321, "coastal": True, "country": "USA", "timezone": "America/Los_Angeles"},
     {"city": "Boston", "icao": "KBOS", "lat": 42.3601, "lon": -71.0589, "coastal": True, "country": "USA", "timezone": "America/New_York"},
     {"city": "Phoenix", "icao": "KPHX", "lat": 33.4484, "lon": -112.0742, "coastal": False, "country": "USA", "timezone": "America/Phoenix"},
@@ -29,7 +29,7 @@ CITIES: List[Dict[str, any]] = [
     {"city": "Las Vegas", "icao": "KLAS", "lat": 36.1699, "lon": -115.1398, "coastal": False, "country": "USA", "timezone": "America/Los_Angeles"},
     {"city": "San Francisco", "icao": "KSFO", "lat": 37.7749, "lon": -122.4194, "coastal": True, "country": "USA", "timezone": "America/Los_Angeles"},
     {"city": "Atlanta", "icao": "KATL", "lat": 33.7490, "lon": -84.3880, "coastal": False, "country": "USA", "timezone": "America/New_York"},
-    {"city": "Houston", "icao": "KIAH", "lat": 29.7604, "lon": -95.3698, "coastal": True, "country": "USA", "timezone": "America/Chicago"},
+    {"city": "Houston", "icao": "KHOU", "lat": 29.6454, "lon": -95.2789, "coastal": True, "country": "USA", "timezone": "America/Chicago"},  # Hobby Airport — Polymarket resolution station (NOT KIAH)
 
     # North America - Canada
     {"city": "Toronto", "icao": "CYYZ", "lat": 43.6629, "lon": -79.3957, "coastal": False, "country": "Canada", "timezone": "America/Toronto"},
@@ -79,12 +79,16 @@ CITIES: List[Dict[str, any]] = [
     {"city": "Singapore", "icao": "WSSS", "lat": 1.3521, "lon": 103.8198, "coastal": True, "country": "Singapore", "timezone": "Asia/Singapore"},
     {"city": "Bangkok", "icao": "VTBS", "lat": 13.7563, "lon": 100.5018, "coastal": True, "country": "Thailand", "timezone": "Asia/Bangkok"},
     {"city": "Hong Kong", "icao": "VHHH", "lat": 22.3193, "lon": 114.1694, "coastal": True, "country": "Hong Kong", "timezone": "Asia/Hong_Kong"},
+    {"city": "Jakarta", "icao": "WIHH", "lat": -6.2666, "lon": 106.8905, "coastal": True, "country": "Indonesia", "timezone": "Asia/Jakarta"},  # Halim Perdanakusuma — Polymarket resolution station
+    {"city": "Kuala Lumpur", "icao": "WMKK", "lat": 2.7456, "lon": 101.7099, "coastal": True, "country": "Malaysia", "timezone": "Asia/Kuala_Lumpur"},
 
     # Asia - East
     {"city": "Tokyo", "icao": "RJTT", "lat": 35.6762, "lon": 139.6503, "coastal": True, "country": "Japan", "timezone": "Asia/Tokyo"},
     {"city": "Seoul", "icao": "RKSI", "lat": 37.5665, "lon": 126.9780, "coastal": True, "country": "South Korea", "timezone": "Asia/Seoul"},
+    {"city": "Busan", "icao": "RKPK", "lat": 35.1795, "lon": 128.9382, "coastal": True, "country": "South Korea", "timezone": "Asia/Seoul"},  # Gimhae Intl
     {"city": "Shanghai", "icao": "ZSPD", "lat": 31.2304, "lon": 121.4737, "coastal": True, "country": "China", "timezone": "Asia/Shanghai"},
     {"city": "Beijing", "icao": "ZBAA", "lat": 39.9042, "lon": 116.4074, "coastal": False, "country": "China", "timezone": "Asia/Shanghai"},
+    {"city": "Chengdu", "icao": "ZUUU", "lat": 30.5785, "lon": 103.9468, "coastal": False, "country": "China", "timezone": "Asia/Shanghai"},  # Shuangliu Intl
 
     # Asia - Central
     {"city": "Istanbul", "icao": "LTAC", "lat": 41.0082, "lon": 28.9784, "coastal": True, "country": "Turkey", "timezone": "Europe/Istanbul"},
@@ -95,7 +99,7 @@ CITIES: List[Dict[str, any]] = [
     {"city": "Auckland", "icao": "NZAA", "lat": -37.0082, "lon": 174.7850, "coastal": True, "country": "New Zealand", "timezone": "Pacific/Auckland"},
 
     # South America
-    {"city": "SÃ£o Paulo", "icao": "SBGR", "lat": -23.5505, "lon": -46.6333, "coastal": False, "country": "Brazil", "timezone": "America/Sao_Paulo"},
+    {"city": "Sao Paulo", "icao": "SBGR", "lat": -23.4356, "lon": -46.4731, "coastal": False, "country": "Brazil", "timezone": "America/Sao_Paulo"},  # Guarulhos Intl — Polymarket resolution station
     {"city": "Rio de Janeiro", "icao": "SBGL", "lat": -22.9068, "lon": -43.1729, "coastal": True, "country": "Brazil", "timezone": "America/Sao_Paulo"},
     {"city": "Buenos Aires", "icao": "SAEZ", "lat": -34.6037, "lon": -58.3816, "coastal": True, "country": "Argentina", "timezone": "America/Argentina/Buenos_Aires"},
     {"city": "Santiago", "icao": "SCEL", "lat": -33.4489, "lon": -70.6693, "coastal": False, "country": "Chile", "timezone": "America/Santiago"},

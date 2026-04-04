@@ -57,17 +57,26 @@ CITY_ICAO_MAP = {
     'los angeles': 'KLAX',
     'chicago': 'KORD',
     'dallas': 'KDFW',
-    'denver': 'KDEN',
+    'denver': 'KBKF',      # Buckley SFB — Polymarket resolution station
     'san francisco': 'KSFO',
     'seattle': 'KSEA',
     'miami': 'KMIA',
     'phoenix': 'KPHX',
     'boston': 'KBOS',
     'atlanta': 'KATL',
-    'houston': 'KIAH',
-    'las vegas': 'KLAX',
+    'houston': 'KHOU',     # Hobby Airport — Polymarket resolution station
+    'las vegas': 'KLAS',
     'washington': 'KDCA',
     'philadelphia': 'KPHL',
+    # New cities
+    'chengdu': 'ZUUU',
+    'kuala lumpur': 'WMKK',
+    'busan': 'RKPK',
+    'jakarta': 'WIHH',     # Halim Perdanakusuma — Polymarket resolution station
+    'amsterdam': 'EHAM',
+    'moscow': 'UUWW',
+    'sao paulo': 'SBGR',
+    'mexico city': 'MMMX',
 }
 
 
