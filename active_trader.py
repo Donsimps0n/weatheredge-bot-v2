@@ -36,10 +36,10 @@ ALL_STATIONS = {
     # Mexico
     'Mexico City': 'MMMX',
     # Europe
-    'London': 'EGLL', 'Dublin': 'EIDW', 'Paris': 'LFPG',
-    'Amsterdam': 'EHAM', 'Berlin': 'EDDF', 'Frankfurt': 'EDDF',
+    'London': 'EGLC', 'Dublin': 'EIDW', 'Paris': 'LFPG',
+    'Amsterdam': 'EHAM', 'Berlin': 'EDDB', 'Frankfurt': 'EDDF',
     'Madrid': 'LEMD', 'Barcelona': 'LEIB', 'Rome': 'LIRF',
-    'Milan': 'LIML', 'Athens': 'LGAV', 'Lisbon': 'LPPT',
+    'Milan': 'LIMC', 'Athens': 'LGAV', 'Lisbon': 'LPPT',
     'Stockholm': 'ESSA', 'Copenhagen': 'EKCH', 'Moscow': 'UUWW',
     'Warsaw': 'EPWA',
     # Middle East
@@ -56,6 +56,12 @@ ALL_STATIONS = {
     'Buenos Aires': 'SAEZ', 'Santiago': 'SCEL',
     # Africa
     'Cairo': 'HECA', 'Johannesburg': 'FAOR', 'Lagos': 'DNAA',
+    # New cities
+    'Chengdu': 'ZUUU', 'Chongqing': 'ZUCK', 'Shenzhen': 'ZGSZ',
+    'Wuhan': 'ZHHH', 'Taipei': 'RCSS', 'Busan': 'RKPK',
+    'Jakarta': 'WIHH', 'Kuala Lumpur': 'WMKK',
+    'Helsinki': 'EFHK', 'Munich': 'EDDM', 'Lucknow': 'VILK',
+    'Wellington': 'NZWN', 'Panama City': 'MPMG',
 }
 
 METAR_API = 'https://aviationweather.gov/api/data/metar'

@@ -17,15 +17,21 @@ KNOWN_ICAO_PREFIXES = [
     'P',      # US Alaska/Hawaii
     'C',      # Canada
     'U',      # Russia/CIS
-    'E',      # Northern Europe
-    'L',      # Southern Europe
-    'W',      # East Asia/Pacific
-    'R',      # Russia
-    'Z',      # China
-    'V',      # Vietnam/SE Asia
-    'T',      # Thailand
-    'M',      # Mexico/Caribbean
-    'S',      # South America
+    'E',      # Northern Europe (EHAM, EDDB, EFHK, EGLL, etc.)
+    'L',      # Southern Europe (LEMD, LIRF, LGAV, LPPT, LLBG, etc.)
+    'W',      # SE Asia/Pacific (WSSS, WMKK, WIHH)
+    'R',      # Japan/Korea (RJTT, RKSI, RKPK, RCSS)
+    'Z',      # China (ZBAA, ZSPD, ZUUU, ZUCK, ZGSZ, ZHHH)
+    'V',      # South Asia (VABB, VIDP, VTBS, VHHH, VILK)
+    'T',      # Caribbean
+    'M',      # Mexico/Central America (MMMX, MPMG)
+    'S',      # South America (SBGR, SAEZ, SCEL)
+    'O',      # Middle East (OMDB)
+    'D',      # West Africa (DNAA)
+    'H',      # East Africa/Egypt (HECA)
+    'F',      # Southern Africa (FAOR)
+    'N',      # South Pacific/NZ (NZAA, NZWN)
+    'Y',      # Australia (YSSY, YMML)
 ]
 
 # Weather-related keywords to search for in rules text
@@ -53,6 +59,7 @@ URL_PATTERNS = {
 
 # Fallback city to ICAO mapping for secondary verification
 CITY_ICAO_MAP = {
+    # US
     'new york': 'KJFK',
     'los angeles': 'KLAX',
     'chicago': 'KORD',
@@ -68,15 +75,73 @@ CITY_ICAO_MAP = {
     'las vegas': 'KLAS',
     'washington': 'KDCA',
     'philadelphia': 'KPHL',
-    # New cities
-    'chengdu': 'ZUUU',
-    'kuala lumpur': 'WMKK',
-    'busan': 'RKPK',
-    'jakarta': 'WIHH',     # Halim Perdanakusuma — Polymarket resolution station
-    'amsterdam': 'EHAM',
-    'moscow': 'UUWW',
-    'sao paulo': 'SBGR',
+    'minneapolis': 'KMSP',
+    # Canada
+    'toronto': 'CYYZ',
+    'vancouver': 'CYVR',
+    'montreal': 'CYUL',
+    # Mexico / Central America
     'mexico city': 'MMMX',
+    'panama city': 'MPMG',
+    # Europe
+    'london': 'EGLC',      # London City Airport — Polymarket resolution station
+    'dublin': 'EIDW',
+    'paris': 'LFPG',
+    'amsterdam': 'EHAM',
+    'berlin': 'EDDB',      # Brandenburg Intl (NOT EDDF Frankfurt)
+    'frankfurt': 'EDDF',
+    'munich': 'EDDM',
+    'madrid': 'LEMD',
+    'barcelona': 'LEIB',
+    'rome': 'LIRF',
+    'milan': 'LIMC',       # Malpensa — Polymarket resolution station
+    'athens': 'LGAV',
+    'lisbon': 'LPPT',
+    'helsinki': 'EFHK',
+    'stockholm': 'ESSA',
+    'copenhagen': 'EKCH',
+    'moscow': 'UUWW',
+    'warsaw': 'EPWA',
+    # Middle East
+    'dubai': 'OMDB',
+    'istanbul': 'LTAC',
+    'tel aviv': 'LLBG',
+    # South Asia
+    'mumbai': 'VABB',
+    'delhi': 'VIDP',
+    'bangalore': 'VOBL',
+    'lucknow': 'VILK',
+    # Southeast Asia
+    'singapore': 'WSSS',
+    'bangkok': 'VTBS',
+    'hong kong': 'VHHH',
+    'jakarta': 'WIHH',     # Halim Perdanakusuma — Polymarket resolution station
+    'kuala lumpur': 'WMKK',
+    # East Asia
+    'tokyo': 'RJTT',
+    'seoul': 'RKSI',
+    'busan': 'RKPK',
+    'shanghai': 'ZSPD',
+    'beijing': 'ZBAA',
+    'chengdu': 'ZUUU',
+    'chongqing': 'ZUCK',
+    'shenzhen': 'ZGSZ',
+    'wuhan': 'ZHHH',
+    'taipei': 'RCSS',      # Songshan — Polymarket resolution station
+    # Oceania
+    'sydney': 'YSSY',
+    'melbourne': 'YMML',
+    'auckland': 'NZAA',
+    'wellington': 'NZWN',
+    # South America
+    'sao paulo': 'SBGR',
+    'rio de janeiro': 'SBGL',
+    'buenos aires': 'SAEZ',
+    'santiago': 'SCEL',
+    # Africa
+    'cairo': 'HECA',
+    'johannesburg': 'FAOR',
+    'lagos': 'DNAA',
 }
 
 

@@ -1062,7 +1062,7 @@ _CITY_COORDS = {
     "memphis": (35.0424, -89.9767),        # KMEM
     "baltimore": (39.1754, -76.6682),      # KBWI
     "milwaukee": (42.9472, -87.8966),      # KMKE
-    "london": (51.4775, -0.4614),          # EGLL Heathrow
+    "london": (51.5048, 0.0495),            # EGLC London City Airport — Polymarket station (NOT EGLL)
     "paris": (49.0097, 2.5478),            # LFPG CDG
     "tokyo": (35.5494, 139.7798),          # RJTT Haneda
     "sydney": (-33.9461, 151.1772),        # YSSY
@@ -1105,6 +1105,30 @@ _CITY_COORDS = {
     "taipei": (25.0699, 121.5523),         # RCSS Songshan — Polymarket station (NOT RCTP Taoyuan)
     "san francisco": (37.6213, -122.3790), # KSFO
     "oslo": (60.1939, 11.1004),            # ENGM Gardermoen
+    "minneapolis": (44.8848, -93.2223),    # KMSP
+    "milan": (45.6306, 8.7231),            # LIMC Malpensa — Polymarket station (NOT LIML)
+    "munich": (48.3537, 11.7750),          # EDDM
+    "helsinki": (60.3172, 24.9633),         # EFHK
+    "dublin": (53.4264, -6.2499),          # EIDW
+    "barcelona": (41.2971, 2.0785),        # LEBL
+    "athens": (37.9364, 23.9445),          # LGAV
+    "lisbon": (38.7756, -9.1354),          # LPPT
+    "stockholm": (59.6519, 17.9186),       # ESSA Arlanda
+    "copenhagen": (55.6180, 12.6560),      # EKCH
+    "warsaw": (52.1657, 20.9671),          # EPWA
+    "delhi": (28.5665, 77.1031),           # VIDP
+    "bangalore": (13.1979, 77.7063),       # VOBL
+    "lucknow": (26.7606, 80.8893),         # VILK
+    "vancouver": (49.1967, -123.1815),     # CYVR
+    "montreal": (45.4706, -73.7408),       # CYUL
+    "chongqing": (29.7192, 106.6413),      # ZUCK Jiangbei
+    "shenzhen": (22.6393, 113.8107),       # ZGSZ Bao'an
+    "wuhan": (30.7838, 114.2081),          # ZHHH Tianhe
+    "wellington": (-41.3272, 174.8050),    # NZWN
+    "auckland": (-37.0082, 174.7850),      # NZAA
+    "melbourne": (-37.6690, 144.8410),     # YMML
+    "rio de janeiro": (-22.8099, -43.2506),# SBGL Galeao
+    "panama city": (9.0714, -79.3835),     # MPMG Marcos A. Gelabert
 }
 
 
