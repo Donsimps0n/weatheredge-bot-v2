@@ -1102,7 +1102,7 @@ _CITY_COORDS = {
     "riyadh": (24.9576, 46.6988),          # OERK
     "tel aviv": (32.0114, 34.8867),        # LLBG
     "manila": (14.5086, 121.0194),         # RPLL
-    "taipei": (25.0777, 121.2326),         # RCTP
+    "taipei": (25.0699, 121.5523),         # RCSS Songshan — Polymarket station (NOT RCTP Taoyuan)
     "san francisco": (37.6213, -122.3790), # KSFO
     "oslo": (60.1939, 11.1004),            # ENGM Gardermoen
 }
