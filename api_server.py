@@ -1042,14 +1042,14 @@ _signals_cache = {"data": None, "ts": 0}
 
 _CITY_COORDS = {
     # All coordinates are airport coords matching Polymarket resolution stations
-    "new york": (40.6413, -73.7781),       # KJFK
+    "new york": (40.7772, -73.8726),       # KLGA LaGuardia — Polymarket settlement (NOT KJFK)
     "los angeles": (33.9425, -118.4081),   # KLAX
     "chicago": (41.9742, -87.9073),        # KORD
     "houston": (29.6454, -95.2789),        # KHOU Hobby — Polymarket station (NOT KIAH)
     "phoenix": (33.4373, -112.0078),       # KPHX
     "philadelphia": (39.8729, -75.2437),   # KPHL
     "san diego": (32.7341, -117.1897),     # KSAN
-    "dallas": (32.8753, -97.0208),         # KDFW
+    "dallas": (32.8471, -96.8518),         # KDAL Love Field — Polymarket settlement (NOT KDFW)
     "miami": (25.7617, -80.1918),          # KMIA
     "atlanta": (33.6407, -84.4277),        # KATL
     "boston": (42.3656, -71.0096),         # KBOS
@@ -1097,7 +1097,7 @@ _CITY_COORDS = {
     "lima": (-12.0219, -77.1143),          # SPIM
     "bogota": (4.7016, -74.1469),          # SKBO
     "santiago": (-33.3930, -70.7858),      # SCEL
-    "lagos": (6.5774, 3.3215),             # DNMM
+    "lagos": (6.5774, 3.3215),             # DNMM Murtala Muhammed
     "nairobi": (-1.3192, 36.9275),         # HKJK
     "riyadh": (24.9576, 46.6988),          # OERK
     "tel aviv": (32.0114, 34.8867),        # LLBG

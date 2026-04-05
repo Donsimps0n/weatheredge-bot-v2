@@ -60,10 +60,10 @@ URL_PATTERNS = {
 # Fallback city to ICAO mapping for secondary verification
 CITY_ICAO_MAP = {
     # US
-    'new york': 'KJFK',
+    'new york': 'KLGA',     # LaGuardia — Polymarket settlement (NOT KJFK)
     'los angeles': 'KLAX',
     'chicago': 'KORD',
-    'dallas': 'KDFW',
+    'dallas': 'KDAL',      # Love Field — Polymarket settlement (NOT KDFW)
     'denver': 'KBKF',      # Buckley SFB — Polymarket resolution station
     'san francisco': 'KSFO',
     'seattle': 'KSEA',
@@ -92,7 +92,7 @@ CITY_ICAO_MAP = {
     'frankfurt': 'EDDF',
     'munich': 'EDDM',
     'madrid': 'LEMD',
-    'barcelona': 'LEIB',
+    'barcelona': 'LEBL',   # El Prat (NOT LEIB Ibiza!)
     'rome': 'LIRF',
     'milan': 'LIMC',       # Malpensa — Polymarket resolution station
     'athens': 'LGAV',
@@ -141,7 +141,7 @@ CITY_ICAO_MAP = {
     # Africa
     'cairo': 'HECA',
     'johannesburg': 'FAOR',
-    'lagos': 'DNAA',
+    'lagos': 'DNMM',       # Murtala Muhammed (NOT DNAA Abuja)
 }
 
 

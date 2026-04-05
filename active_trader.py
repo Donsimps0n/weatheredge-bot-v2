@@ -18,18 +18,18 @@ log = logging.getLogger('active_trader')
 # Legacy NWS-only stations (still used as primary for US cities)
 NWS_STATIONS = {
     'Atlanta': 'KATL', 'Miami': 'KMIA', 'Chicago': 'KORD',
-    'New York': 'KLGA', 'Los Angeles': 'KLAX', 'Dallas': 'KDFW',
-    'Seattle': 'KSEA', 'Denver': 'KDEN', 'Boston': 'KBOS',
-    'Phoenix': 'KPHX', 'Houston': 'KIAH', 'San Francisco': 'KSFO',
+    'New York': 'KLGA', 'Los Angeles': 'KLAX', 'Dallas': 'KDAL',
+    'Seattle': 'KSEA', 'Denver': 'KBKF', 'Boston': 'KBOS',
+    'Phoenix': 'KPHX', 'Houston': 'KHOU', 'San Francisco': 'KSFO',
 }
 
 # Full ICAO mapping for ALL 58 cities — enables global fact-based exits
 ALL_STATIONS = {
-    # US (14)
+    # US (14) — all matched to Polymarket settlement stations
     'Atlanta': 'KATL', 'Miami': 'KMIA', 'Chicago': 'KORD',
-    'New York': 'KLGA', 'Los Angeles': 'KLAX', 'Dallas': 'KDFW',
-    'Seattle': 'KSEA', 'Denver': 'KDEN', 'Boston': 'KBOS',
-    'Phoenix': 'KPHX', 'Houston': 'KIAH', 'San Francisco': 'KSFO',
+    'New York': 'KLGA', 'Los Angeles': 'KLAX', 'Dallas': 'KDAL',
+    'Seattle': 'KSEA', 'Denver': 'KBKF', 'Boston': 'KBOS',
+    'Phoenix': 'KPHX', 'Houston': 'KHOU', 'San Francisco': 'KSFO',
     'Minneapolis': 'KMSP', 'Las Vegas': 'KLAS',
     # Canada
     'Toronto': 'CYYZ', 'Vancouver': 'CYVR', 'Montreal': 'CYUL',
@@ -38,7 +38,7 @@ ALL_STATIONS = {
     # Europe
     'London': 'EGLC', 'Dublin': 'EIDW', 'Paris': 'LFPG',
     'Amsterdam': 'EHAM', 'Berlin': 'EDDB', 'Frankfurt': 'EDDF',
-    'Madrid': 'LEMD', 'Barcelona': 'LEIB', 'Rome': 'LIRF',
+    'Madrid': 'LEMD', 'Barcelona': 'LEBL', 'Rome': 'LIRF',
     'Milan': 'LIMC', 'Athens': 'LGAV', 'Lisbon': 'LPPT',
     'Stockholm': 'ESSA', 'Copenhagen': 'EKCH', 'Moscow': 'UUWW',
     'Warsaw': 'EPWA',
@@ -55,7 +55,7 @@ ALL_STATIONS = {
     'São Paulo': 'SBGR', 'Sao Paulo': 'SBGR', 'Rio de Janeiro': 'SBGL',
     'Buenos Aires': 'SAEZ', 'Santiago': 'SCEL',
     # Africa
-    'Cairo': 'HECA', 'Johannesburg': 'FAOR', 'Lagos': 'DNAA',
+    'Cairo': 'HECA', 'Johannesburg': 'FAOR', 'Lagos': 'DNMM',
     # New cities
     'Chengdu': 'ZUUU', 'Chongqing': 'ZUCK', 'Shenzhen': 'ZGSZ',
     'Wuhan': 'ZHHH', 'Taipei': 'RCSS', 'Busan': 'RKPK',

@@ -15,107 +15,112 @@ from typing import List, Dict, Tuple
 # ============================================================================
 
 CITIES: List[Dict[str, any]] = [
+    # ══════════════════════════════════════════════════════════════════════
+    # ALL coordinates are AIRPORT coordinates matching the Polymarket
+    # settlement station. NO city-centre coords. Verified 2026-04-05.
+    # ══════════════════════════════════════════════════════════════════════
+
     # North America - US
-    {"city": "New York", "icao": "KJFK", "lat": 40.6413, "lon": -74.0060, "coastal": True, "country": "USA", "timezone": "America/New_York"},
+    {"city": "New York", "icao": "KLGA", "lat": 40.7772, "lon": -73.8726, "coastal": True, "country": "USA", "timezone": "America/New_York"},  # LaGuardia — Polymarket settlement (NOT KJFK)
     {"city": "Los Angeles", "icao": "KLAX", "lat": 33.9425, "lon": -118.4081, "coastal": True, "country": "USA", "timezone": "America/Los_Angeles"},
-    {"city": "Chicago", "icao": "KORD", "lat": 41.8781, "lon": -87.6298, "coastal": False, "country": "USA", "timezone": "America/Chicago"},
-    {"city": "Miami", "icao": "KMIA", "lat": 25.7617, "lon": -80.1918, "coastal": True, "country": "USA", "timezone": "America/New_York"},
-    {"city": "Dallas", "icao": "KDFW", "lat": 32.8753, "lon": -97.0208, "coastal": False, "country": "USA", "timezone": "America/Chicago"},
-    {"city": "Denver", "icao": "KBKF", "lat": 39.7170, "lon": -104.7519, "coastal": False, "country": "USA", "timezone": "America/Denver"},  # Buckley SFB — Polymarket resolution station (NOT KDEN)
-    {"city": "Seattle", "icao": "KSEA", "lat": 47.6062, "lon": -122.3321, "coastal": True, "country": "USA", "timezone": "America/Los_Angeles"},
-    {"city": "Boston", "icao": "KBOS", "lat": 42.3601, "lon": -71.0589, "coastal": True, "country": "USA", "timezone": "America/New_York"},
-    {"city": "Phoenix", "icao": "KPHX", "lat": 33.4484, "lon": -112.0742, "coastal": False, "country": "USA", "timezone": "America/Phoenix"},
-    {"city": "Minneapolis", "icao": "KMSP", "lat": 44.9537, "lon": -93.0900, "coastal": False, "country": "USA", "timezone": "America/Chicago"},
-    {"city": "Las Vegas", "icao": "KLAS", "lat": 36.1699, "lon": -115.1398, "coastal": False, "country": "USA", "timezone": "America/Los_Angeles"},
-    {"city": "San Francisco", "icao": "KSFO", "lat": 37.7749, "lon": -122.4194, "coastal": True, "country": "USA", "timezone": "America/Los_Angeles"},
-    {"city": "Atlanta", "icao": "KATL", "lat": 33.7490, "lon": -84.3880, "coastal": False, "country": "USA", "timezone": "America/New_York"},
-    {"city": "Houston", "icao": "KHOU", "lat": 29.6454, "lon": -95.2789, "coastal": True, "country": "USA", "timezone": "America/Chicago"},  # Hobby Airport — Polymarket resolution station (NOT KIAH)
+    {"city": "Chicago", "icao": "KORD", "lat": 41.9742, "lon": -87.9073, "coastal": False, "country": "USA", "timezone": "America/Chicago"},
+    {"city": "Miami", "icao": "KMIA", "lat": 25.7932, "lon": -80.2906, "coastal": True, "country": "USA", "timezone": "America/New_York"},
+    {"city": "Dallas", "icao": "KDAL", "lat": 32.8471, "lon": -96.8518, "coastal": False, "country": "USA", "timezone": "America/Chicago"},  # Love Field — Polymarket settlement (NOT KDFW)
+    {"city": "Denver", "icao": "KBKF", "lat": 39.7170, "lon": -104.7519, "coastal": False, "country": "USA", "timezone": "America/Denver"},  # Buckley SFB — Polymarket settlement (NOT KDEN)
+    {"city": "Seattle", "icao": "KSEA", "lat": 47.4502, "lon": -122.3088, "coastal": True, "country": "USA", "timezone": "America/Los_Angeles"},
+    {"city": "Boston", "icao": "KBOS", "lat": 42.3656, "lon": -71.0096, "coastal": True, "country": "USA", "timezone": "America/New_York"},
+    {"city": "Phoenix", "icao": "KPHX", "lat": 33.4373, "lon": -112.0078, "coastal": False, "country": "USA", "timezone": "America/Phoenix"},
+    {"city": "Minneapolis", "icao": "KMSP", "lat": 44.8848, "lon": -93.2223, "coastal": False, "country": "USA", "timezone": "America/Chicago"},
+    {"city": "Las Vegas", "icao": "KLAS", "lat": 36.0840, "lon": -115.1537, "coastal": False, "country": "USA", "timezone": "America/Los_Angeles"},
+    {"city": "San Francisco", "icao": "KSFO", "lat": 37.6213, "lon": -122.3790, "coastal": True, "country": "USA", "timezone": "America/Los_Angeles"},
+    {"city": "Atlanta", "icao": "KATL", "lat": 33.6407, "lon": -84.4277, "coastal": False, "country": "USA", "timezone": "America/New_York"},
+    {"city": "Houston", "icao": "KHOU", "lat": 29.6454, "lon": -95.2789, "coastal": True, "country": "USA", "timezone": "America/Chicago"},  # Hobby — Polymarket settlement (NOT KIAH)
 
     # North America - Canada
-    {"city": "Toronto", "icao": "CYYZ", "lat": 43.6629, "lon": -79.3957, "coastal": False, "country": "Canada", "timezone": "America/Toronto"},
-    {"city": "Vancouver", "icao": "CYVR", "lat": 49.2827, "lon": -123.1207, "coastal": True, "country": "Canada", "timezone": "America/Vancouver"},
-    {"city": "Montreal", "icao": "CYUL", "lat": 45.5017, "lon": -73.5673, "coastal": False, "country": "Canada", "timezone": "America/Toronto"},
+    {"city": "Toronto", "icao": "CYYZ", "lat": 43.6772, "lon": -79.6306, "coastal": False, "country": "Canada", "timezone": "America/Toronto"},
+    {"city": "Vancouver", "icao": "CYVR", "lat": 49.1967, "lon": -123.1815, "coastal": True, "country": "Canada", "timezone": "America/Vancouver"},
+    {"city": "Montreal", "icao": "CYUL", "lat": 45.4706, "lon": -73.7408, "coastal": False, "country": "Canada", "timezone": "America/Toronto"},
 
     # North America - Mexico
-    {"city": "Mexico City", "icao": "MMMX", "lat": 19.4326, "lon": -99.1332, "coastal": False, "country": "Mexico", "timezone": "America/Mexico_City"},
+    {"city": "Mexico City", "icao": "MMMX", "lat": 19.4363, "lon": -99.0721, "coastal": False, "country": "Mexico", "timezone": "America/Mexico_City"},
 
     # Europe - UK & Ireland
-    {"city": "London", "icao": "EGLC", "lat": 51.5048, "lon": 0.0495, "coastal": True, "country": "UK", "timezone": "Europe/London"},  # London City Airport — Polymarket resolution station (NOT EGLL Heathrow)
-    {"city": "Dublin", "icao": "EIDW", "lat": 53.3498, "lon": -6.2603, "coastal": True, "country": "Ireland", "timezone": "Europe/Dublin"},
+    {"city": "London", "icao": "EGLC", "lat": 51.5048, "lon": 0.0495, "coastal": True, "country": "UK", "timezone": "Europe/London"},  # London City Airport — Polymarket settlement (NOT EGLL)
+    {"city": "Dublin", "icao": "EIDW", "lat": 53.4264, "lon": -6.2499, "coastal": True, "country": "Ireland", "timezone": "Europe/Dublin"},
 
     # Europe - Western
-    {"city": "Paris", "icao": "LFPG", "lat": 48.8566, "lon": 2.3522, "coastal": False, "country": "France", "timezone": "Europe/Paris"},
-    {"city": "Amsterdam", "icao": "EHAM", "lat": 52.3676, "lon": 4.9041, "coastal": True, "country": "Netherlands", "timezone": "Europe/Amsterdam"},
-    {"city": "Berlin", "icao": "EDDB", "lat": 52.3667, "lon": 13.5033, "coastal": False, "country": "Germany", "timezone": "Europe/Berlin"},  # Brandenburg Intl (EDDF was Frankfurt!)
-    {"city": "Frankfurt", "icao": "EDDF", "lat": 50.1109, "lon": 8.6821, "coastal": False, "country": "Germany", "timezone": "Europe/Berlin"},
+    {"city": "Paris", "icao": "LFPG", "lat": 49.0097, "lon": 2.5478, "coastal": False, "country": "France", "timezone": "Europe/Paris"},
+    {"city": "Amsterdam", "icao": "EHAM", "lat": 52.3105, "lon": 4.7683, "coastal": True, "country": "Netherlands", "timezone": "Europe/Amsterdam"},
+    {"city": "Berlin", "icao": "EDDB", "lat": 52.3667, "lon": 13.5033, "coastal": False, "country": "Germany", "timezone": "Europe/Berlin"},
+    {"city": "Frankfurt", "icao": "EDDF", "lat": 50.0379, "lon": 8.5622, "coastal": False, "country": "Germany", "timezone": "Europe/Berlin"},
     {"city": "Munich", "icao": "EDDM", "lat": 48.3537, "lon": 11.7750, "coastal": False, "country": "Germany", "timezone": "Europe/Berlin"},
 
     # Europe - Southern
-    {"city": "Madrid", "icao": "LEMD", "lat": 40.4168, "lon": -3.7038, "coastal": False, "country": "Spain", "timezone": "Europe/Madrid"},
-    {"city": "Barcelona", "icao": "LEIB", "lat": 41.3851, "lon": 2.1734, "coastal": True, "country": "Spain", "timezone": "Europe/Madrid"},
-    {"city": "Rome", "icao": "LIRF", "lat": 41.9028, "lon": 12.4964, "coastal": True, "country": "Italy", "timezone": "Europe/Rome"},
-    {"city": "Milan", "icao": "LIMC", "lat": 45.6306, "lon": 8.7231, "coastal": False, "country": "Italy", "timezone": "Europe/Rome"},  # Malpensa — Polymarket resolution station (NOT LIML Linate)
+    {"city": "Madrid", "icao": "LEMD", "lat": 40.4983, "lon": -3.5676, "coastal": False, "country": "Spain", "timezone": "Europe/Madrid"},
+    {"city": "Barcelona", "icao": "LEBL", "lat": 41.2971, "lon": 2.0785, "coastal": True, "country": "Spain", "timezone": "Europe/Madrid"},  # El Prat (was LEIB which is Ibiza!)
+    {"city": "Rome", "icao": "LIRF", "lat": 41.8003, "lon": 12.2389, "coastal": True, "country": "Italy", "timezone": "Europe/Rome"},
+    {"city": "Milan", "icao": "LIMC", "lat": 45.6306, "lon": 8.7231, "coastal": False, "country": "Italy", "timezone": "Europe/Rome"},  # Malpensa — Polymarket settlement (NOT LIML)
 
     # Europe - Southern/Mediterranean
-    {"city": "Athens", "icao": "LGAV", "lat": 37.9838, "lon": 23.7275, "coastal": True, "country": "Greece", "timezone": "Europe/Athens"},
-    {"city": "Lisbon", "icao": "LPPT", "lat": 38.7223, "lon": -9.1393, "coastal": True, "country": "Portugal", "timezone": "Europe/Lisbon"},
+    {"city": "Athens", "icao": "LGAV", "lat": 37.9364, "lon": 23.9445, "coastal": True, "country": "Greece", "timezone": "Europe/Athens"},
+    {"city": "Lisbon", "icao": "LPPT", "lat": 38.7756, "lon": -9.1354, "coastal": True, "country": "Portugal", "timezone": "Europe/Lisbon"},
 
     # Europe - Northern/Eastern
     {"city": "Helsinki", "icao": "EFHK", "lat": 60.3172, "lon": 24.9633, "coastal": True, "country": "Finland", "timezone": "Europe/Helsinki"},
-    {"city": "Stockholm", "icao": "ESSA", "lat": 59.3293, "lon": 18.0686, "coastal": True, "country": "Sweden", "timezone": "Europe/Stockholm"},
-    {"city": "Copenhagen", "icao": "EKCH", "lat": 55.6761, "lon": 12.5683, "coastal": True, "country": "Denmark", "timezone": "Europe/Copenhagen"},
-    {"city": "Moscow", "icao": "UUWW", "lat": 55.7558, "lon": 37.6173, "coastal": False, "country": "Russia", "timezone": "Europe/Moscow"},
-    {"city": "Warsaw", "icao": "EPWA", "lat": 52.2297, "lon": 21.0122, "coastal": False, "country": "Poland", "timezone": "Europe/Warsaw"},
+    {"city": "Stockholm", "icao": "ESSA", "lat": 59.6519, "lon": 17.9186, "coastal": True, "country": "Sweden", "timezone": "Europe/Stockholm"},
+    {"city": "Copenhagen", "icao": "EKCH", "lat": 55.6180, "lon": 12.6560, "coastal": True, "country": "Denmark", "timezone": "Europe/Copenhagen"},
+    {"city": "Moscow", "icao": "UUWW", "lat": 55.5915, "lon": 37.2615, "coastal": False, "country": "Russia", "timezone": "Europe/Moscow"},
+    {"city": "Warsaw", "icao": "EPWA", "lat": 52.1657, "lon": 20.9671, "coastal": False, "country": "Poland", "timezone": "Europe/Warsaw"},
 
     # Middle East
-    {"city": "Dubai", "icao": "OMDB", "lat": 25.2048, "lon": 55.2708, "coastal": True, "country": "UAE", "timezone": "Asia/Dubai"},
-    {"city": "Istanbul", "icao": "LTAC", "lat": 41.0082, "lon": 28.9784, "coastal": True, "country": "Turkey", "timezone": "Europe/Istanbul"},
-    {"city": "Tel Aviv", "icao": "LLBG", "lat": 32.0853, "lon": 34.7818, "coastal": True, "country": "Israel", "timezone": "Asia/Jerusalem"},
+    {"city": "Dubai", "icao": "OMDB", "lat": 25.2532, "lon": 55.3657, "coastal": True, "country": "UAE", "timezone": "Asia/Dubai"},
+    {"city": "Istanbul", "icao": "LTAC", "lat": 39.9497, "lon": 32.6883, "coastal": True, "country": "Turkey", "timezone": "Europe/Istanbul"},  # Esenboga
+    {"city": "Tel Aviv", "icao": "LLBG", "lat": 32.0114, "lon": 34.8867, "coastal": True, "country": "Israel", "timezone": "Asia/Jerusalem"},
 
     # Asia - South
-    {"city": "Mumbai", "icao": "VABB", "lat": 19.0760, "lon": 72.8777, "coastal": True, "country": "India", "timezone": "Asia/Kolkata"},
-    {"city": "Delhi", "icao": "VIDP", "lat": 28.5921, "lon": 77.2829, "coastal": False, "country": "India", "timezone": "Asia/Kolkata"},
-    {"city": "Bangalore", "icao": "VOBL", "lat": 12.9716, "lon": 77.5946, "coastal": False, "country": "India", "timezone": "Asia/Kolkata"},
+    {"city": "Mumbai", "icao": "VABB", "lat": 19.0896, "lon": 72.8656, "coastal": True, "country": "India", "timezone": "Asia/Kolkata"},
+    {"city": "Delhi", "icao": "VIDP", "lat": 28.5665, "lon": 77.1031, "coastal": False, "country": "India", "timezone": "Asia/Kolkata"},
+    {"city": "Bangalore", "icao": "VOBL", "lat": 13.1979, "lon": 77.7063, "coastal": False, "country": "India", "timezone": "Asia/Kolkata"},
     {"city": "Lucknow", "icao": "VILK", "lat": 26.7606, "lon": 80.8893, "coastal": False, "country": "India", "timezone": "Asia/Kolkata"},
 
     # Asia - Southeast
-    {"city": "Singapore", "icao": "WSSS", "lat": 1.3521, "lon": 103.8198, "coastal": True, "country": "Singapore", "timezone": "Asia/Singapore"},
-    {"city": "Bangkok", "icao": "VTBS", "lat": 13.7563, "lon": 100.5018, "coastal": True, "country": "Thailand", "timezone": "Asia/Bangkok"},
-    {"city": "Hong Kong", "icao": "VHHH", "lat": 22.3193, "lon": 114.1694, "coastal": True, "country": "Hong Kong", "timezone": "Asia/Hong_Kong"},
-    {"city": "Jakarta", "icao": "WIHH", "lat": -6.2666, "lon": 106.8905, "coastal": True, "country": "Indonesia", "timezone": "Asia/Jakarta"},  # Halim Perdanakusuma — Polymarket resolution station
+    {"city": "Singapore", "icao": "WSSS", "lat": 1.3592, "lon": 103.9894, "coastal": True, "country": "Singapore", "timezone": "Asia/Singapore"},
+    {"city": "Bangkok", "icao": "VTBS", "lat": 13.6811, "lon": 100.7475, "coastal": True, "country": "Thailand", "timezone": "Asia/Bangkok"},
+    {"city": "Hong Kong", "icao": "VHHH", "lat": 22.3080, "lon": 113.9185, "coastal": True, "country": "Hong Kong", "timezone": "Asia/Hong_Kong"},
+    {"city": "Jakarta", "icao": "WIHH", "lat": -6.2666, "lon": 106.8905, "coastal": True, "country": "Indonesia", "timezone": "Asia/Jakarta"},  # Halim Perdanakusuma
     {"city": "Kuala Lumpur", "icao": "WMKK", "lat": 2.7456, "lon": 101.7099, "coastal": True, "country": "Malaysia", "timezone": "Asia/Kuala_Lumpur"},
 
     # Asia - East
-    {"city": "Tokyo", "icao": "RJTT", "lat": 35.6762, "lon": 139.6503, "coastal": True, "country": "Japan", "timezone": "Asia/Tokyo"},
-    {"city": "Seoul", "icao": "RKSI", "lat": 37.5665, "lon": 126.9780, "coastal": True, "country": "South Korea", "timezone": "Asia/Seoul"},
-    {"city": "Busan", "icao": "RKPK", "lat": 35.1795, "lon": 128.9382, "coastal": True, "country": "South Korea", "timezone": "Asia/Seoul"},  # Gimhae Intl
-    {"city": "Shanghai", "icao": "ZSPD", "lat": 31.2304, "lon": 121.4737, "coastal": True, "country": "China", "timezone": "Asia/Shanghai"},
-    {"city": "Beijing", "icao": "ZBAA", "lat": 39.9042, "lon": 116.4074, "coastal": False, "country": "China", "timezone": "Asia/Shanghai"},
-    {"city": "Chengdu", "icao": "ZUUU", "lat": 30.5785, "lon": 103.9468, "coastal": False, "country": "China", "timezone": "Asia/Shanghai"},  # Shuangliu Intl
-    {"city": "Chongqing", "icao": "ZUCK", "lat": 29.7192, "lon": 106.6413, "coastal": False, "country": "China", "timezone": "Asia/Shanghai"},  # Jiangbei Intl
-    {"city": "Shenzhen", "icao": "ZGSZ", "lat": 22.6393, "lon": 113.8107, "coastal": True, "country": "China", "timezone": "Asia/Shanghai"},  # Bao'an Intl
-    {"city": "Wuhan", "icao": "ZHHH", "lat": 30.7838, "lon": 114.2081, "coastal": False, "country": "China", "timezone": "Asia/Shanghai"},  # Tianhe Intl
-    {"city": "Taipei", "icao": "RCSS", "lat": 25.0699, "lon": 121.5523, "coastal": True, "country": "Taiwan", "timezone": "Asia/Taipei"},  # Songshan — Polymarket station (NOT RCTP Taoyuan)
+    {"city": "Tokyo", "icao": "RJTT", "lat": 35.5494, "lon": 139.7798, "coastal": True, "country": "Japan", "timezone": "Asia/Tokyo"},
+    {"city": "Seoul", "icao": "RKSI", "lat": 37.4602, "lon": 126.4407, "coastal": True, "country": "South Korea", "timezone": "Asia/Seoul"},
+    {"city": "Busan", "icao": "RKPK", "lat": 35.1795, "lon": 128.9382, "coastal": True, "country": "South Korea", "timezone": "Asia/Seoul"},
+    {"city": "Shanghai", "icao": "ZSPD", "lat": 31.1443, "lon": 121.8083, "coastal": True, "country": "China", "timezone": "Asia/Shanghai"},
+    {"city": "Beijing", "icao": "ZBAA", "lat": 40.0799, "lon": 116.6031, "coastal": False, "country": "China", "timezone": "Asia/Shanghai"},
+    {"city": "Chengdu", "icao": "ZUUU", "lat": 30.5785, "lon": 103.9468, "coastal": False, "country": "China", "timezone": "Asia/Shanghai"},
+    {"city": "Chongqing", "icao": "ZUCK", "lat": 29.7192, "lon": 106.6413, "coastal": False, "country": "China", "timezone": "Asia/Shanghai"},
+    {"city": "Shenzhen", "icao": "ZGSZ", "lat": 22.6393, "lon": 113.8107, "coastal": True, "country": "China", "timezone": "Asia/Shanghai"},
+    {"city": "Wuhan", "icao": "ZHHH", "lat": 30.7838, "lon": 114.2081, "coastal": False, "country": "China", "timezone": "Asia/Shanghai"},
+    {"city": "Taipei", "icao": "RCSS", "lat": 25.0699, "lon": 121.5523, "coastal": True, "country": "Taiwan", "timezone": "Asia/Taipei"},  # Songshan — Polymarket settlement (NOT RCTP)
 
     # Oceania
-    {"city": "Sydney", "icao": "YSSY", "lat": -33.8688, "lon": 151.2093, "coastal": True, "country": "Australia", "timezone": "Australia/Sydney"},
-    {"city": "Melbourne", "icao": "YMML", "lat": -37.8136, "lon": 144.9631, "coastal": True, "country": "Australia", "timezone": "Australia/Melbourne"},
+    {"city": "Sydney", "icao": "YSSY", "lat": -33.9461, "lon": 151.1772, "coastal": True, "country": "Australia", "timezone": "Australia/Sydney"},
+    {"city": "Melbourne", "icao": "YMML", "lat": -37.6690, "lon": 144.8410, "coastal": True, "country": "Australia", "timezone": "Australia/Melbourne"},
     {"city": "Auckland", "icao": "NZAA", "lat": -37.0082, "lon": 174.7850, "coastal": True, "country": "New Zealand", "timezone": "Pacific/Auckland"},
     {"city": "Wellington", "icao": "NZWN", "lat": -41.3272, "lon": 174.8050, "coastal": True, "country": "New Zealand", "timezone": "Pacific/Auckland"},
 
     # South America
-    {"city": "Sao Paulo", "icao": "SBGR", "lat": -23.4356, "lon": -46.4731, "coastal": False, "country": "Brazil", "timezone": "America/Sao_Paulo"},  # Guarulhos Intl — Polymarket resolution station
-    {"city": "Rio de Janeiro", "icao": "SBGL", "lat": -22.9068, "lon": -43.1729, "coastal": True, "country": "Brazil", "timezone": "America/Sao_Paulo"},
-    {"city": "Buenos Aires", "icao": "SAEZ", "lat": -34.6037, "lon": -58.3816, "coastal": True, "country": "Argentina", "timezone": "America/Argentina/Buenos_Aires"},
-    {"city": "Santiago", "icao": "SCEL", "lat": -33.4489, "lon": -70.6693, "coastal": False, "country": "Chile", "timezone": "America/Santiago"},
+    {"city": "Sao Paulo", "icao": "SBGR", "lat": -23.4356, "lon": -46.4731, "coastal": False, "country": "Brazil", "timezone": "America/Sao_Paulo"},  # Guarulhos
+    {"city": "Rio de Janeiro", "icao": "SBGL", "lat": -22.8099, "lon": -43.2506, "coastal": True, "country": "Brazil", "timezone": "America/Sao_Paulo"},
+    {"city": "Buenos Aires", "icao": "SAEZ", "lat": -34.8222, "lon": -58.5358, "coastal": True, "country": "Argentina", "timezone": "America/Argentina/Buenos_Aires"},  # Ezeiza
+    {"city": "Santiago", "icao": "SCEL", "lat": -33.3930, "lon": -70.7858, "coastal": False, "country": "Chile", "timezone": "America/Santiago"},
 
     # Africa
-    {"city": "Cairo", "icao": "HECA", "lat": 30.0444, "lon": 31.2357, "coastal": True, "country": "Egypt", "timezone": "Africa/Cairo"},
-    {"city": "Johannesburg", "icao": "FAOR", "lat": -26.2023, "lon": 28.0436, "coastal": False, "country": "South Africa", "timezone": "Africa/Johannesburg"},
-    {"city": "Lagos", "icao": "DNAA", "lat": 6.5244, "lon": 3.3792, "coastal": True, "country": "Nigeria", "timezone": "Africa/Lagos"},
+    {"city": "Cairo", "icao": "HECA", "lat": 30.1219, "lon": 31.4056, "coastal": True, "country": "Egypt", "timezone": "Africa/Cairo"},
+    {"city": "Johannesburg", "icao": "FAOR", "lat": -26.1392, "lon": 28.2460, "coastal": False, "country": "South Africa", "timezone": "Africa/Johannesburg"},
+    {"city": "Lagos", "icao": "DNMM", "lat": 6.5774, "lon": 3.3215, "coastal": True, "country": "Nigeria", "timezone": "Africa/Lagos"},  # Murtala Muhammed (was DNAA Abuja!)
 
     # Central America
-    {"city": "Panama City", "icao": "MPMG", "lat": 9.0714, "lon": -79.3835, "coastal": True, "country": "Panama", "timezone": "America/Panama"},  # Marcos A. Gelabert
+    {"city": "Panama City", "icao": "MPMG", "lat": 9.0714, "lon": -79.3835, "coastal": True, "country": "Panama", "timezone": "America/Panama"},
 ]
 
 
