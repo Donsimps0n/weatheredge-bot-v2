@@ -35,7 +35,7 @@ log = logging.getLogger(__name__)
 MIN_OBS_FOR_CORRECTION = 5
 MIN_OBS_FOR_FULL_WEIGHT = 30
 CORRECTION_THRESHOLD_F = 0.5  # Only correct if |bias| > 0.5°F
-POLL_INTERVAL_S = 86400  # Re-read DB once per day (corrections don't change intra-day)
+POLL_INTERVAL_S = 3600  # Re-read DB every hour (was 86400; need fresher data during observation phase)
 F_TO_C = 1.0 / 1.8
 
 # ── Knob B: Sigma floor ──
