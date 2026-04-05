@@ -3537,6 +3537,11 @@ def stats_reliability():
 
     for row in rows:
         d = dict(row)
+
+        # Skip voided trades entirely
+        if d.get("resolved") == "voided" or d.get("won") == -1:
+            continue
+
         raw_meta = d.get("meta") or "{}"
         try:
             m = _json.loads(raw_meta)
@@ -4198,6 +4203,37 @@ def api_ledger_unresolved():
     try:
         trades = trade_ledger.get_unresolved_trades()
         return jsonify({"ok": True, "trades": trades, "count": len(trades)})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+@app.route("/api/admin/void-trades", methods=["POST"])
+def api_void_trades():
+    """Mark trades as voided (bad data, wrong station, etc). Removes from stats.
+    POST JSON: {"trade_ids": [1,2,3], "reason": "city-centre coords"}
+    """
+    if not HAS_LEDGER:
+        return jsonify({"ok": False, "error": "Ledger not available"}), 503
+    try:
+        data = request.get_json(force=True)
+        ids = data.get("trade_ids", [])
+        reason = data.get("reason", "voided")
+        if not ids:
+            return jsonify({"ok": False, "error": "No trade_ids provided"}), 400
+        conn = trade_ledger._get_conn()
+        voided = []
+        for tid in ids:
+            # Mark as voided: resolved='voided', won=-1 (sentinel), pnl=0
+            # won=-1 means neither won(1) nor lost(0) — excluded from stats
+            conn.execute("""
+                UPDATE trades SET resolved = 'voided', won = -1, pnl = 0,
+                    resolution_price = -1, resolved_at = ?
+                WHERE id = ? AND resolved IS NULL
+            """, (datetime.now(timezone.utc).isoformat(), tid))
+            voided.append(tid)
+        conn.commit()
+        logger.info("ADMIN: Voided %d trades: %s — reason: %s", len(voided), voided, reason)
+        return jsonify({"ok": True, "voided": voided, "reason": reason})
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 500
 
