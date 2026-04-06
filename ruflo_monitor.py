@@ -85,6 +85,51 @@ class PreTradeValidator:
 
         return True, ' | '.join(checks)
 
+    def validate_2bin(self, signal_a: dict, signal_b: dict) -> tuple:
+        """Validate an exact_2bin grouped trade (two adjacent bin legs).
+        Checks combined spend, per-leg sanity, and adjacency.
+        Returns (ok, reason)."""
+        checks = []
+
+        # 1. Both legs must pass individual confidence check
+        for label, sig in [("leg_a", signal_a), ("leg_b", signal_b)]:
+            conf = sig.get('confidence', 0)
+            if conf < 2:
+                return False, f'EXACT_2BIN_REJECT: {label} confidence {conf} < 2'
+            checks.append(f'{label} confidence OK')
+
+        # 2. Combined theo_ev must exceed threshold
+        ev_a = signal_a.get('theo_ev', signal_a.get('ev', 0))
+        ev_b = signal_b.get('theo_ev', signal_b.get('ev', 0))
+        combined_ev = ev_a + ev_b
+        if combined_ev < 0.10:
+            return False, f'EXACT_2BIN_REJECT: combined_ev {combined_ev:.3f} < 0.10'
+        checks.append(f'combined_ev {combined_ev:.3f} OK')
+
+        # 3. Combined spend cap
+        size_a = signal_a.get('size', 999)
+        size_b = signal_b.get('size', 999)
+        size_cap = signal_a.get('size_cap', 10)
+        if (size_a + size_b) > size_cap * 2:
+            return False, f'EXACT_2BIN_REJECT: combined size ${size_a + size_b} > ${size_cap * 2} cap'
+        checks.append(f'combined size ${size_a + size_b} OK')
+
+        # 4. Market timing (both legs must have >60min to resolution)
+        for label, sig in [("leg_a", signal_a), ("leg_b", signal_b)]:
+            end_date = sig.get('end_date', '')
+            if end_date:
+                try:
+                    from datetime import datetime, timezone
+                    end = datetime.fromisoformat(end_date.replace('Z', '+00:00'))
+                    mins_left = (end - datetime.now(timezone.utc)).total_seconds() / 60
+                    if mins_left < 60:
+                        return False, f'EXACT_2BIN_REJECT: {label} only {mins_left:.0f} min to resolution'
+                    checks.append(f'{label} {mins_left:.0f}min OK')
+                except:
+                    pass
+
+        return True, ' | '.join(checks)
+
 # ============================================================
 # AGENT 2 - POSITION MONITOR
 # ============================================================

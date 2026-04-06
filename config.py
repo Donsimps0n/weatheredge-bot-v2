@@ -125,6 +125,23 @@ CITIES: List[Dict[str, any]] = [
 
 
 # ============================================================================
+# STRATEGY FAMILY CONFIGURATION
+# ============================================================================
+
+# Strategy enable flags — controls which strategy families accept new entries
+ENABLE_ABOVE_BELOW = True       # Primary active strategy
+ENABLE_EXACT_SINGLE = False     # Disabled: 0/11 WR, systematic overestimation
+ENABLE_EXACT_2BIN = True        # Experimental: adjacent 2-bin exact mode
+
+# Exact 2-bin parameters
+EXACT_2BIN_SAME_DAY_ONLY = False        # Allow next-day markets too
+EXACT_2BIN_ALLOW_NEXT_DAY = True        # Explicitly allow next-day
+EXACT_2BIN_REQUIRE_ADJACENT = True      # Bins must be adjacent
+EXACT_2BIN_MIN_COMBINED_EDGE = 0.10     # Min combined_model_prob - combined_cost
+EXACT_2BIN_MAX_COMBINED_COST = 0.40     # Max sum of both leg prices (40c)
+
+
+# ============================================================================
 # TRADING THRESHOLDS (Named Constants)
 # ============================================================================
 

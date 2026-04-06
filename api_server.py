@@ -51,6 +51,22 @@ try:
 except ImportError:
     logger.warning("config.CITIES not available; post-peak cutoff uses EST fallback")
 
+# ── Strategy family config ──
+try:
+    from config import (ENABLE_ABOVE_BELOW, ENABLE_EXACT_SINGLE, ENABLE_EXACT_2BIN,
+                        EXACT_2BIN_SAME_DAY_ONLY, EXACT_2BIN_ALLOW_NEXT_DAY,
+                        EXACT_2BIN_REQUIRE_ADJACENT, EXACT_2BIN_MIN_COMBINED_EDGE,
+                        EXACT_2BIN_MAX_COMBINED_COST)
+except ImportError:
+    ENABLE_ABOVE_BELOW = True
+    ENABLE_EXACT_SINGLE = False
+    ENABLE_EXACT_2BIN = True
+    EXACT_2BIN_SAME_DAY_ONLY = False
+    EXACT_2BIN_ALLOW_NEXT_DAY = True
+    EXACT_2BIN_REQUIRE_ADJACENT = True
+    EXACT_2BIN_MIN_COMBINED_EDGE = 0.10
+    EXACT_2BIN_MAX_COMBINED_COST = 0.40
+
 def _get_local_hour(city_name: str) -> int:
     """Get current local hour for a city. Falls back to EST if unknown."""
     tz = _CITY_TZ.get(city_name.lower())
@@ -2475,6 +2491,18 @@ def _run_auto_trade_cycle():
                 logger.info("POST_PEAK: %s | same-day market, local hour %d >= 17, skipping new entry", _city, _local_hr)
                 _rej["post_peak"] += 1
                 continue
+            # ── Strategy family gate: skip disabled strategy types ──
+            _direction = sig.get("direction", "exact")
+            if _direction == "exact" and not ENABLE_EXACT_SINGLE:
+                logger.debug("STRATEGY_GATE: %s | exact_single disabled, skipping", _city)
+                _rej.setdefault("strategy_gate", 0)
+                _rej["strategy_gate"] += 1
+                continue
+            if _direction in ("above", "below") and not ENABLE_ABOVE_BELOW:
+                logger.debug("STRATEGY_GATE: %s | above_below disabled, skipping", _city)
+                _rej.setdefault("strategy_gate", 0)
+                _rej["strategy_gate"] += 1
+                continue
             # Entry kill switch: skip if physically impossible to reach temperature
             if ACTIVE_TRADER_AVAILABLE:
                 _direction = sig.get("direction", "exact")
@@ -2502,6 +2530,7 @@ def _run_auto_trade_cycle():
                     'end_date': sig.get('end_date', ''),
                     'size': cfg['max_size'],
                     'size_cap': cfg['max_size'],  # align Ruflo cap with bot config
+                    'strategy_type': 'above_below' if sig.get('direction') in ('above', 'below') else 'exact_single',
                 }
                 _v_ok, _v_reason = _ruflo_validator.validate(_ruflo_sig)
                 if not _v_ok:
@@ -2632,6 +2661,7 @@ def _run_auto_trade_cycle():
                 "clob_edge_at_fill": _clob_info.get("edge_at_fill", 0) if _clob_info else None,
                 "data_quality": sig.get("data_quality", "good"),
                 "direction": sig.get("direction", "exact"),  # exact / above / below
+                "strategy_type": "above_below" if sig.get("direction") in ("above", "below") else "exact_single",
                 # Rich meta for post-mortem analysis (flows into ledger meta JSON)
                 "edge_pp": sig.get("theo_ev", 0),
                 "spread_pct": _clob_info.get("spread_pct", 0) if _clob_info else None,
@@ -2742,6 +2772,174 @@ def _run_auto_trade_cycle():
                     trade_info["error"] = str(exc)[:200]
                     _trade_log.append(trade_info)
         # ÃÂÃÂ¢ÃÂÃÂÃÂÃÂÃÂÃÂ¢ÃÂÃÂÃÂÃÂ Agent 5: NO Harvester ÃÂÃÂ¢ÃÂÃÂÃÂÃÂÃÂÃÂ¢ÃÂÃÂÃÂÃÂÃÂÃÂ¢ÃÂÃÂÃÂÃÂÃÂÃÂ¢ÃÂÃÂÃÂÃÂÃÂÃÂ¢ÃÂÃÂÃÂÃÂÃÂÃÂ¢ÃÂÃÂÃÂÃÂÃÂÃÂ¢ÃÂÃÂÃÂÃÂÃÂÃÂ¢ÃÂÃÂÃÂÃÂÃÂÃÂ¢ÃÂÃÂÃÂÃÂÃÂÃÂ¢ÃÂÃÂÃÂÃÂÃÂÃÂ¢ÃÂÃÂÃÂÃÂÃÂÃÂ¢ÃÂÃÂÃÂÃÂÃÂÃÂ¢ÃÂÃÂÃÂÃÂÃÂÃÂ¢ÃÂÃÂÃÂÃÂÃÂÃÂ¢ÃÂÃÂÃÂÃÂÃÂÃÂ¢ÃÂÃÂÃÂÃÂÃÂÃÂ¢ÃÂÃÂÃÂÃÂÃÂÃÂ¢ÃÂÃÂÃÂÃÂÃÂÃÂ¢ÃÂÃÂÃÂÃÂÃÂÃÂ¢ÃÂÃÂÃÂÃÂÃÂÃÂ¢ÃÂÃÂÃÂÃÂÃÂÃÂ¢ÃÂÃÂÃÂÃÂÃÂÃÂ¢ÃÂÃÂÃÂÃÂÃÂÃÂ¢ÃÂÃÂÃÂÃÂÃÂÃÂ¢ÃÂÃÂÃÂÃÂÃÂÃÂ¢ÃÂÃÂÃÂÃÂÃÂÃÂ¢ÃÂÃÂÃÂÃÂÃÂÃÂ¢ÃÂÃÂÃÂÃÂÃÂÃÂ¢ÃÂÃÂÃÂÃÂÃÂÃÂ¢ÃÂÃÂÃÂÃÂÃÂÃÂ¢ÃÂÃÂÃÂÃÂÃÂÃÂ¢ÃÂÃÂÃÂÃÂÃÂÃÂ¢ÃÂÃÂÃÂÃÂÃÂÃÂ¢ÃÂÃÂÃÂÃÂÃÂÃÂ¢ÃÂÃÂÃÂÃÂÃÂÃÂ¢ÃÂÃÂÃÂÃÂÃÂÃÂ¢ÃÂÃÂÃÂÃÂÃÂÃÂ¢ÃÂÃÂÃÂÃÂÃÂÃÂ¢ÃÂÃÂÃÂÃÂÃÂÃÂ¢ÃÂÃÂÃÂÃÂÃÂÃÂ¢ÃÂÃÂÃÂÃÂÃÂÃÂ¢ÃÂÃÂÃÂÃÂÃÂÃÂ¢ÃÂÃÂÃÂÃÂÃÂÃÂ¢ÃÂÃÂÃÂÃÂÃÂÃÂ¢ÃÂÃÂÃÂÃÂ
+        # ── EXACT_2BIN: Adjacent 2-bin exact strategy ──────────────────────
+        # Groups exact bins into adjacent pairs and evaluates combined edge.
+        # Each pair becomes a single strategy idea with two legs.
+        import uuid as _uuid
+        _2bin_traded = 0
+        if ENABLE_EXACT_2BIN and sigs:
+            # Group exact-direction signals by city + end_date
+            _exact_by_group = {}
+            for _s2 in sigs:
+                if _s2.get('direction') != 'exact':
+                    continue
+                if _s2.get('signal') not in ('BUY YES', 'BUY NO'):
+                    continue
+                if not _s2.get('tokens'):
+                    continue
+                _gk2 = (_s2.get('city', ''), _s2.get('end_date', ''))
+                _exact_by_group.setdefault(_gk2, []).append(_s2)
+
+            for _gk2, _group_sigs in _exact_by_group.items():
+                if _2bin_traded >= 3:  # max 3 exact_2bin trades per cycle
+                    break
+                # Sort by threshold to find adjacent bins
+                _group_sigs.sort(key=lambda s: s.get('threshold_c', 0) or 0)
+                # Find best adjacent pair
+                _best_pair = None
+                _best_edge = -999
+                for _i2 in range(len(_group_sigs) - 1):
+                    _a = _group_sigs[_i2]
+                    _b = _group_sigs[_i2 + 1]
+                    # Check adjacency: thresholds must be within ~1.5°C
+                    _tc_a = _a.get('threshold_c', 0) or 0
+                    _tc_b = _b.get('threshold_c', 0) or 0
+                    if EXACT_2BIN_REQUIRE_ADJACENT and abs(_tc_b - _tc_a) > 1.5:
+                        continue
+                    # Same-day / next-day gating
+                    _q2_lower = _a.get("question", "").lower()
+                    _dm2 = _re.search(r'(?:march|april|may|june|july|aug|sep|oct|nov|dec|jan|feb)\s+(\d+)', _q2_lower)
+                    _is_tomorrow_2 = False
+                    if _dm2:
+                        _qday2 = int(_dm2.group(1))
+                        _is_tomorrow_2 = _qday2 != datetime.now(timezone.utc).day
+                    if EXACT_2BIN_SAME_DAY_ONLY and _is_tomorrow_2:
+                        continue
+                    if _is_tomorrow_2 and not EXACT_2BIN_ALLOW_NEXT_DAY:
+                        continue
+                    # Compute combined metrics
+                    _prob_a = _a.get('our_prob', 0) / 100.0
+                    _prob_b = _b.get('our_prob', 0) / 100.0
+                    _price_a = _a.get('market_price', 50) / 100.0
+                    _price_b = _b.get('market_price', 50) / 100.0
+                    _combined_prob = _prob_a + _prob_b
+                    _combined_cost = _price_a + _price_b
+                    _combined_edge = _combined_prob - _combined_cost
+                    if _combined_edge < EXACT_2BIN_MIN_COMBINED_EDGE:
+                        continue
+                    if _combined_cost > EXACT_2BIN_MAX_COMBINED_COST:
+                        continue
+                    if _combined_edge > _best_edge:
+                        _best_edge = _combined_edge
+                        _best_pair = (_a, _b, _combined_prob, _combined_cost, _combined_edge)
+
+                if not _best_pair:
+                    continue
+                _sig_a, _sig_b, _comb_prob, _comb_cost, _comb_edge = _best_pair
+                _2bin_city = _sig_a.get('city', '')
+
+                # Check exposure cap
+                _2bin_today = datetime.now(timezone.utc).strftime('%Y-%m-%d')
+                _2bin_city_key = (_2bin_city.lower(), _2bin_today)
+                if _city_day_exposure.get(_2bin_city_key, 0) >= _MAX_CITY_DAY_EXPOSURE:
+                    continue
+
+                # RUFLO validation for exact_2bin
+                if RUFLO_AVAILABLE:
+                    _2b_sig_a = {
+                        'confidence': _sig_a.get('confidence', 0),
+                        'theo_ev': _comb_edge * 100,
+                        'ev': _comb_edge * 100,
+                        'end_date': _sig_a.get('end_date', ''),
+                        'size': cfg['max_size'],
+                        'size_cap': cfg['max_size'],
+                    }
+                    _2b_sig_b = {
+                        'confidence': _sig_b.get('confidence', 0),
+                        'theo_ev': _comb_edge * 100,
+                        'ev': _comb_edge * 100,
+                        'end_date': _sig_b.get('end_date', ''),
+                        'size': cfg['max_size'],
+                        'size_cap': cfg['max_size'],
+                    }
+                    try:
+                        _2b_ok, _2b_reason = _ruflo_validator.validate_2bin(_2b_sig_a, _2b_sig_b)
+                    except AttributeError:
+                        _2b_ok, _2b_reason = _ruflo_validator.validate(_2b_sig_a)
+                    if not _2b_ok:
+                        logger.info("RUFLO_2BIN_REJECT: %s | %s", _2bin_city, _2b_reason)
+                        continue
+
+                # Place both legs
+                _group_id = str(_uuid.uuid4())[:12]
+                for _leg_idx, _leg_sig in enumerate([_sig_a, _sig_b]):
+                    _leg_tokens = _leg_sig.get("tokens", [])
+                    _leg_sig_type = _leg_sig.get("signal", "BUY YES")
+                    _leg_outcome = "Yes" if _leg_sig_type == "BUY YES" else "No"
+                    _leg_token_id = None
+                    for _tk in _leg_tokens:
+                        if str(_tk.get("outcome", "")).lower() == _leg_outcome.lower():
+                            _leg_token_id = _tk.get("token_id", "")
+                            break
+                    if not _leg_token_id or _leg_token_id in _traded_tokens:
+                        continue
+                    _leg_mkt = _leg_sig.get('market_price', 50) / 100.0
+                    _leg_prob = _leg_sig.get('our_prob', 50) / 100.0
+                    _leg_price = round(min(_leg_mkt + 0.01, _leg_prob - 0.02), 2)
+                    _leg_price = max(0.01, min(0.99, _leg_price))
+                    _leg_spend = max(1.0, cfg['max_size'] * 0.5)  # half size per leg
+                    _leg_size = max(1, int(_leg_spend / _leg_price))
+
+                    _2bin_trade = {
+                        "ts": datetime.now(timezone.utc).isoformat(),
+                        "question": _leg_sig.get("question", "")[:80],
+                        "city": _2bin_city,
+                        "signal": _leg_sig_type,
+                        "trade_source": "exact_2bin",
+                        "token_id": _leg_token_id,
+                        "price": _leg_price,
+                        "size": _leg_size,
+                        "ev": round(_comb_edge * 100, 1),
+                        "kelly": _leg_sig.get("kelly", 0),
+                        "our_prob": _leg_sig.get("our_prob", 0),
+                        "mkt_price": _leg_sig.get("market_price", 0),
+                        "ev_dollar": _leg_sig.get("ev_dollar", 0),
+                        "direction": "exact",
+                        "strategy_type": "exact_2bin",
+                        "trade_group_id": _group_id,
+                        "mode": "PAPER" if cfg["paper_mode"] else "LIVE",
+                        "data_quality": _leg_sig.get("data_quality", "good"),
+                        "station_confidence": _leg_sig.get("confidence", None),
+                        "selected_bins": [
+                            _sig_a.get('threshold_c', 0),
+                            _sig_b.get('threshold_c', 0),
+                        ],
+                        "combined_cost": round(_comb_cost, 4),
+                        "combined_model_prob": round(_comb_prob, 4),
+                        "combined_edge": round(_comb_edge, 4),
+                        "leg_index": _leg_idx,
+                        "calibration_v": 2,
+                        "boot_id": BOOT_ID,
+                    }
+                    if cfg["paper_mode"]:
+                        _traded_tokens.add(_leg_token_id)
+                        _paper_trades.append(_2bin_trade)
+                        _trade_log.append(_2bin_trade)
+                        _spend_2b = _leg_price * _leg_size
+                        _city_day_exposure[_2bin_city_key] = _city_day_exposure.get(_2bin_city_key, 0) + _spend_2b
+                        if HAS_LEDGER:
+                            try:
+                                trade_ledger.record_trade(_2bin_trade)
+                            except Exception:
+                                pass
+                        logger.info("EXACT_2BIN PAPER: %s leg%d %s @ %.2f x %d (group=%s comb_edge=%.1f%%)",
+                                    _2bin_city, _leg_idx, _leg_sig_type, _leg_price, _leg_size,
+                                    _group_id, _comb_edge * 100)
+                _2bin_traded += 1
+                traded += 1
+        if _2bin_traded:
+            logger.info("EXACT_2BIN: placed %d pair trades this cycle", _2bin_traded)
+
         # ── NO_HARVEST DISABLED — penny-picking loses money long-term ──
         # 90 trades earned $5.53 total ($0.06/trade), one loss wipes 400 wins.
         # Keeping code for reference but bypassing execution.
@@ -4236,6 +4434,156 @@ def api_void_trades():
         return jsonify({"ok": True, "voided": voided, "reason": reason})
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 500
+
+
+@app.route("/api/stats/strategy")
+def stats_by_strategy():
+    """Per-strategy-family performance breakdown.
+
+    Returns separate metrics for: above_below, exact_single_legacy, exact_2bin.
+    For exact_2bin, also returns grouped (per-pair) accounting.
+    """
+    if not HAS_LEDGER:
+        return jsonify({"ok": False, "error": "ledger not available"}), 503
+    import sqlite3 as _sq, json as _json
+    from collections import defaultdict
+    try:
+        import trade_ledger as _tl
+        conn = _sq.connect(_tl.DB_PATH, check_same_thread=False)
+        conn.row_factory = _sq.Row
+        rows = conn.execute("SELECT * FROM trades ORDER BY id DESC LIMIT 1000").fetchall()
+        conn.close()
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 500
+
+    families = defaultdict(lambda: {
+        "trades": 0, "won": 0, "lost": 0, "pending": 0, "pnl": 0.0,
+        "costs": [], "probs": [], "edges": [], "cities": defaultdict(lambda: {"w": 0, "l": 0, "p": 0, "pnl": 0.0}),
+    })
+    # exact_2bin grouped accounting
+    _2bin_groups = defaultdict(lambda: {"legs": [], "won": None, "cost": 0, "pnl": 0})
+
+    for row in rows:
+        d = dict(row)
+        if d.get("resolved") == "voided" or d.get("won") == -1:
+            continue
+        raw_meta = d.get("meta") or "{}"
+        try:
+            m = _json.loads(raw_meta)
+        except Exception:
+            m = {}
+
+        # Determine strategy_type
+        # 1. Check explicit strategy_type column (new trades)
+        st = d.get("strategy_type") or m.get("strategy_type", "")
+        if not st or st == "legacy":
+            # Infer from direction for legacy trades
+            direction = m.get("direction", "")
+            sig = d.get("signal", "")
+            if direction in ("above", "below"):
+                st = "above_below"
+            elif direction == "exact":
+                st = "exact_single"
+            elif sig in ("NO_HARVEST", "YES_HARVEST", "SNIPE_YES", "SNIPE_NO",
+                         "GFS_DELTA_YES", "GFS_DELTA_NO", "OBS_CONFIRM_YES",
+                         "OBS_CONFIRM_NO", "OBS_KILL_NO", "HEDGE_YES", "HEDGE_NO"):
+                st = "agent_" + sig.lower()
+            else:
+                st = "other"
+
+        f = families[st]
+        f["trades"] += 1
+        w = d.get("won")
+        city = d.get("city", "unknown")
+        pnl = d.get("pnl") or 0
+        if w == 1:
+            f["won"] += 1
+            f["cities"][city]["w"] += 1
+        elif w == 0:
+            f["lost"] += 1
+            f["cities"][city]["l"] += 1
+        else:
+            f["pending"] += 1
+            f["cities"][city]["p"] += 1
+        f["pnl"] += pnl
+        f["cities"][city]["pnl"] += pnl
+
+        cost = d.get("price", 0) or 0
+        prob = (m.get("our_prob") or d.get("our_prob", 0)) or 0
+        mp = (m.get("mkt_price") or d.get("mkt_price", 0)) or 0
+        if cost > 0:
+            f["costs"].append(cost)
+        if prob > 0:
+            f["probs"].append(float(prob))
+        if prob > 0 and mp > 0:
+            mp_norm = mp * 100 if mp < 1 else mp
+            f["edges"].append(float(prob) - mp_norm)
+
+        # Track 2bin groups — use actual spend (price * size), not per-share price
+        gid = d.get("trade_group_id") or m.get("trade_group_id")
+        if st == "exact_2bin" and gid:
+            g = _2bin_groups[gid]
+            _leg_spend = (d.get("price", 0) or 0) * (d.get("size", 0) or 0)
+            g["legs"].append({"city": city, "won": w, "price": cost,
+                              "spend": round(_leg_spend, 4), "pnl": pnl,
+                              "size": d.get("size", 0)})
+            g["cost"] += _leg_spend  # combined spend, not per-share price
+            g["pnl"] += pnl
+            # Group wins if ANY leg wins (temp landed in one of the two bins)
+            if w == 1:
+                g["won"] = True
+            elif w == 0 and g["won"] is None:
+                g["won"] = False
+
+    def _avg(lst):
+        return round(sum(lst) / len(lst), 2) if lst else None
+
+    result = {}
+    for st, f in families.items():
+        n_resolved = f["won"] + f["lost"]
+        result[st] = {
+            "trades": f["trades"],
+            "won": f["won"],
+            "lost": f["lost"],
+            "pending": f["pending"],
+            "win_rate_pct": round(100 * f["won"] / n_resolved, 1) if n_resolved else None,
+            "pnl": round(f["pnl"], 2),
+            "avg_entry_cost": _avg(f["costs"]),
+            "avg_model_prob": _avg(f["probs"]),
+            "avg_edge_pp": _avg(f["edges"]),
+            "cities": {c: dict(v) for c, v in f["cities"].items()},
+        }
+
+    # exact_2bin grouped summary — parent-level accounting
+    # group_wins = any leg resolved YES (temp hit one of the two bins)
+    # group_net_profitable = groups where combined PnL > 0 (the real success metric)
+    _resolved_groups = [g for g in _2bin_groups.values() if g["won"] is not None]
+    _profitable_groups = [g for g in _resolved_groups if g["pnl"] > 0]
+    _2bin_summary = {
+        "total_groups": len(_2bin_groups),
+        "group_wins": sum(1 for g in _2bin_groups.values() if g["won"] is True),
+        "group_losses": sum(1 for g in _2bin_groups.values() if g["won"] is False),
+        "group_pending": sum(1 for g in _2bin_groups.values() if g["won"] is None),
+        "group_net_profitable": len(_profitable_groups),
+        "avg_combined_spend": _avg([g["cost"] for g in _2bin_groups.values()]) if _2bin_groups else None,
+        "total_pnl": round(sum(g["pnl"] for g in _2bin_groups.values()), 2),
+        "avg_group_pnl": _avg([g["pnl"] for g in _resolved_groups]) if _resolved_groups else None,
+    }
+    n_resolved_g = _2bin_summary["group_wins"] + _2bin_summary["group_losses"]
+    _2bin_summary["group_hit_rate_pct"] = round(
+        100 * _2bin_summary["group_wins"] / n_resolved_g, 1) if n_resolved_g else None
+    _2bin_summary["group_profit_rate_pct"] = round(
+        100 * len(_profitable_groups) / len(_resolved_groups), 1) if _resolved_groups else None
+
+    return jsonify({
+        "ok": True,
+        "note": ("Strategy family breakdown. exact_single = legacy single-bin exact. "
+                 "above_below = threshold direction trades. exact_2bin = new adjacent pair mode. "
+                 "IMPORTANT: exact_2bin 'by_strategy' counts are PER-LEG (2 rows per pair). "
+                 "Use 'exact_2bin_grouped' for parent-level pair accounting."),
+        "by_strategy": result,
+        "exact_2bin_grouped": _2bin_summary,
+    })
 
 
 @app.route("/api/trade-debug")

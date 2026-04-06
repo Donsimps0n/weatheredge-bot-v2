@@ -76,6 +76,17 @@ def _init_tables(conn):
         CREATE INDEX IF NOT EXISTS idx_trades_ts ON trades(ts);
         CREATE INDEX IF NOT EXISTS idx_trades_resolved ON trades(resolved);
     """)
+
+    # Migration: add strategy columns if not present
+    try:
+        conn.execute("ALTER TABLE trades ADD COLUMN strategy_type TEXT DEFAULT 'legacy'")
+    except Exception:
+        pass  # column already exists
+    try:
+        conn.execute("ALTER TABLE trades ADD COLUMN trade_group_id TEXT")
+    except Exception:
+        pass  # column already exists
+
     conn.commit()
 
 
@@ -85,8 +96,8 @@ def record_trade(trade: dict):
     conn.execute("""
         INSERT INTO trades (ts, question, city, signal, token_id, price, size,
             spend, ev, ev_dollar, kelly, our_prob, mkt_price, sigma, mode,
-            clob_spread, clob_edge_at_fill, meta)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            clob_spread, clob_edge_at_fill, meta, strategy_type, trade_group_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, (
         trade.get("ts", datetime.now(timezone.utc).isoformat()),
         trade.get("question", ""),
@@ -109,7 +120,10 @@ def record_trade(trade: dict):
                     if k not in ("ts","question","city","signal","token_id",
                                  "price","size","ev","ev_dollar","kelly",
                                  "our_prob","mkt_price","sigma","mode",
-                                 "clob_spread","clob_edge_at_fill")}),
+                                 "clob_spread","clob_edge_at_fill",
+                                 "strategy_type","trade_group_id")}),
+        trade.get("strategy_type", "legacy"),
+        trade.get("trade_group_id"),
     ))
     conn.commit()
 
