@@ -43,6 +43,24 @@ class EnsembleProbability:
         TODO: extract forecast_temps + bin_edges from *forecast_data* and call
         ``estimate_bin_probs_ensemble()``.
         """
+        # ── HARD KILL: STRATEGY_REWRITE.md §3.5 ─────────────────────
+        # No real long-horizon model exists. Returning a 50/50 stub
+        # to a Kelly sizer is how we get bled. Refuse to emit any
+        # tradeable probability until a real model ships.
+        try:
+            from config import ENABLE_LONG_HORIZON
+        except Exception:
+            ENABLE_LONG_HORIZON = False
+        if not ENABLE_LONG_HORIZON:
+            logger.info(
+                "EnsembleProbability HARD-KILL: long-horizon disabled "
+                "(station=%s) — returning untradeable stub", station,
+            )
+            return {
+                "yes_prob": 0.5, "no_prob": 0.5, "bin_probs": [],
+                "source": "long_horizon_disabled",
+                "tradeable": False,
+            }
         if not _PROB_CALC_AVAILABLE:
             logger.debug("probability_calculator unavailable — returning neutral stub")
         elif forecast_data is None:

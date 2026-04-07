@@ -129,9 +129,33 @@ CITIES: List[Dict[str, any]] = [
 # ============================================================================
 
 # Strategy enable flags — controls which strategy families accept new entries
-ENABLE_ABOVE_BELOW = True       # Primary active strategy
-ENABLE_EXACT_SINGLE = False     # Disabled: 0/11 WR, systematic overestimation
-ENABLE_EXACT_2BIN = True        # Experimental: adjacent 2-bin exact mode
+# ── STRATEGY_REWRITE.md rollout (operator-approved 2026-04-07) ──
+ENABLE_F_STRICT       = True    # Product A: F-Strict predictive cohort
+ENABLE_NO_HARVEST_V2  = True    # Product B: scaled rake business
+ENABLE_ABOVE_BELOW    = True    # SHADOW LANE only — tiny risk, separately tracked
+ENABLE_EXACT_SINGLE   = False   # Disabled: 0/11 WR, systematic overestimation
+ENABLE_EXACT_2BIN     = True    # Allowed only inside F-Strict gate
+ENABLE_LONG_HORIZON   = False   # Hard-killed: no model exists for >24h
+PILOT_CITY_ONLY       = "London"  # Drop after 72h success criteria
+ABOVE_BELOW_SHADOW    = True    # Shadow lane only (cap $2/trade, separately tracked).
+                                # NOT philosophically abandoned — paused for the
+                                # clean London pilot. Flip PILOT_CITY_ONLY=None to
+                                # re-enable; the lane logic is always live.
+
+# F-Strict gate parameters (mirror of src/strategy_gate.py constants)
+F_STRICT_PRICE_BAND        = (0.10, 0.20)
+F_STRICT_RECAL_PROB_BAND   = (0.22, 0.40)
+F_STRICT_LEAD_HOURS        = (12, 24)
+F_STRICT_MAX_RMSE_C        = 1.8
+F_STRICT_PER_TRADE_CAP_USD = 10
+F_STRICT_DAILY_STOP_USD    = -25.0
+SIGMA_FLOOR_C              = 2.5  # raised from 1.5 (median station RMSE = 1.6)
+EXACT_BIN_HARD_CAP         = 0.35  # lowered from 0.45
+
+# NO_HARVEST staged scaling (operator: $5 → $10 → $25)
+NO_HARVEST_CAP_USD         = 10    # STAGE 1 (will bump to 25 after fill-quality validation)
+NO_HARVEST_MIN_DEPTH_USD   = 50    # both legs must show ≥$50 visible liquidity
+NO_HARVEST_POLL_SECONDS    = 30
 
 # Exact 2-bin parameters
 EXACT_2BIN_SAME_DAY_ONLY = False        # Allow next-day markets too

@@ -34,14 +34,62 @@ class PreTradeValidator:
             return False, f'REJECT: theo_ev {ev} < 0.10 minimum'
         checks.append(f'theo_ev {ev:.3f} OK')
 
-        # 3. Market must not be within 1h of resolution
+        # ── STRATEGY_REWRITE §2.1 + RUFLO consultation §4 ──
+        # Lead-time band, price band, recal_prob band, station RMSE filter.
+        # Only enforced when strategy is in the F-Strict cohort (exact bins).
+        try:
+            from src.strategy_gate import (
+                F_STRICT_PRICE_MIN, F_STRICT_PRICE_MAX,
+                F_STRICT_RECAL_PROB_MIN, F_STRICT_RECAL_PROB_MAX,
+                F_STRICT_LEAD_MIN_MIN, F_STRICT_LEAD_MAX_MIN,
+                F_STRICT_MAX_RMSE_C, recal_prob, station_rmse_ok,
+            )
+            _is_exact = signal.get('direction') in ('exact',) or \
+                        signal.get('strategy', '').startswith('exact') or \
+                        (signal.get('lane') == 'f_strict')
+            if _is_exact:
+                _price = float(signal.get('market_price', signal.get('price', 0)) or 0)
+                if _price > 1.5:  # caller passed cents (0..100)
+                    _price = _price / 100.0
+                if not (F_STRICT_PRICE_MIN <= _price <= F_STRICT_PRICE_MAX):
+                    return False, f'REJECT: price {_price:.3f} outside F-Strict band'
+                checks.append(f'price {_price:.3f} OK')
+
+                _raw = float(signal.get('our_prob', 0) or 0)
+                if _raw > 1.5:
+                    _raw = _raw / 100.0
+                _rp = recal_prob(_raw)
+                if not (F_STRICT_RECAL_PROB_MIN <= _rp <= F_STRICT_RECAL_PROB_MAX):
+                    return False, f'REJECT: recal_prob {_rp:.3f} outside F-Strict band'
+                checks.append(f'recal_prob {_rp:.3f} OK')
+
+                _city = signal.get('city', '')
+                if not station_rmse_ok(_city, F_STRICT_MAX_RMSE_C):
+                    return False, f'REJECT: station {_city} RMSE > {F_STRICT_MAX_RMSE_C}°C (or unknown)'
+                checks.append('station RMSE OK')
+        except Exception as _se:
+            checks.append(f'F-strict check skipped: {_se}')
+
+        # 3. Market resolution timing — F-Strict requires 12–24h window;
+        #    other strategies just need >60min.
         end_date = signal.get('end_date', '')
         if end_date:
             try:
                 end = datetime.fromisoformat(end_date.replace('Z','+00:00'))
                 mins_left = (end - datetime.now(timezone.utc)).total_seconds() / 60
-                if mins_left < 60:
-                    return False, f'REJECT: only {mins_left:.0f} min to resolution'
+                _min_lead = 60
+                _max_lead = None
+                try:
+                    if signal.get('lane') == 'f_strict' or signal.get('direction') == 'exact':
+                        from src.strategy_gate import F_STRICT_LEAD_MIN_MIN, F_STRICT_LEAD_MAX_MIN
+                        _min_lead = F_STRICT_LEAD_MIN_MIN
+                        _max_lead = F_STRICT_LEAD_MAX_MIN
+                except Exception:
+                    pass
+                if mins_left < _min_lead:
+                    return False, f'REJECT: only {mins_left:.0f} min to resolution (min {_min_lead})'
+                if _max_lead is not None and mins_left > _max_lead:
+                    return False, f'REJECT: {mins_left:.0f} min to resolution > F-Strict max {_max_lead}'
                 checks.append(f'{mins_left:.0f} min to resolution OK')
             except: pass
 

@@ -9,6 +9,25 @@ import math
 from datetime import datetime, timezone
 from typing import Optional
 
+try:
+    from zoneinfo import ZoneInfo
+except ImportError:  # py<3.9 fallback
+    ZoneInfo = None  # type: ignore
+
+# Per-city IANA timezone (kept in sync with config.CITIES). Used to compute
+# the local hour for max_achievable_today() instead of the old hard-coded EST.
+try:
+    from config import CITIES as _CITIES_FOR_TZ
+    _CITY_TZ = {c["city"]: c.get("timezone", "UTC") for c in _CITIES_FOR_TZ}
+except Exception:
+    _CITY_TZ = {}
+
+try:
+    from src.strategy_gate import station_rmse_c as _station_rmse_c
+except Exception:
+    def _station_rmse_c(_city):  # type: ignore
+        return None
+
 logger = logging.getLogger(__name__)
 
 try:
@@ -79,7 +98,16 @@ class NowcasterEnsemble:
 
         obs_temp_c = (obs_temp_f - 32) * 5.0 / 9.0
         now_utc = datetime.now(timezone.utc)
-        local_hour = (now_utc.hour - 5) % 24  # rough EST
+        # FIX: use real per-city timezone instead of hard-coded EST.
+        # Old behaviour broke max_achievable_today() for Tokyo/Seoul/London/etc.
+        _tz_name = _CITY_TZ.get(city)
+        if _tz_name and ZoneInfo is not None:
+            try:
+                local_hour = now_utc.astimezone(ZoneInfo(_tz_name)).hour
+            except Exception:
+                local_hour = now_utc.hour
+        else:
+            local_hour = now_utc.hour
 
         # Compute max achievable temperature today
         max_f = max_achievable_today(obs_temp_f, local_hour)
@@ -94,7 +122,13 @@ class NowcasterEnsemble:
         if market_data:
             threshold_c = market_data.get("threshold_c")
             direction = market_data.get("direction", "exact")
-            sigma = 1.5 if time_horizon <= 12 else 2.5
+            # FIX: sigma now derived from per-station RMSE with a hard floor
+            # of 2.0°C, rather than the old static 1.5/2.5. STRATEGY_REWRITE §1.2.
+            _rmse = _station_rmse_c(city)
+            if _rmse is not None:
+                sigma = max(2.0, float(_rmse))
+            else:
+                sigma = 2.5  # unknown station: be conservative
 
             if threshold_c is not None:
                 # Bin physically unreachable -> near-zero probability
@@ -109,8 +143,11 @@ class NowcasterEnsemble:
                         "obs_temp_f": obs_temp_f, "max_achievable_f": max_f,
                     }
 
-                # Anchor forecast to obs + projected max
-                ftemp = obs_temp_c * 0.4 + min(max_c, threshold_c + 1) * 0.6
+                # FIX: ftemp must NOT depend on the threshold being asked
+                # about. The old formula (... min(max_c, threshold_c + 1) ...)
+                # created a feedback loop that systematically inflated yes_prob
+                # for any bin near current obs. STRATEGY_REWRITE §1.4.
+                ftemp = obs_temp_c * 0.5 + max_c * 0.5
 
                 if direction == "exact":
                     z_hi = (threshold_c + 0.5 - ftemp) / sigma

@@ -511,8 +511,32 @@ def health():
     except Exception:
         _gamma_info = {"error": "unavailable"}
 
+    # ── PILOT MODE READOUT (STRATEGY_REWRITE rollout) ──
+    try:
+        import config as _cfg
+        _pilot = {
+            "pilot_city_only":     _cfg.PILOT_CITY_ONLY or "ALL_CITIES",
+            "predictive_lane":     "F-Strict" if _cfg.ENABLE_F_STRICT else "DISABLED",
+            "above_below_shadow":  ("enabled" if _cfg.ABOVE_BELOW_SHADOW else "disabled")
+                                    + (" (paused by pilot)" if _cfg.PILOT_CITY_ONLY else ""),
+            "long_horizon":        "enabled" if _cfg.ENABLE_LONG_HORIZON else "disabled",
+            "no_harvest_v2":       f"enabled (cap ${_cfg.NO_HARVEST_CAP_USD})" if _cfg.ENABLE_NO_HARVEST_V2 else "disabled",
+            "exact_2bin":          "enabled" if _cfg.ENABLE_EXACT_2BIN else "disabled",
+            "exact_single":        "enabled" if _cfg.ENABLE_EXACT_SINGLE else "disabled",
+            "sigma_floor_c":       _cfg.SIGMA_FLOOR_C,
+            "exact_bin_hard_cap":  _cfg.EXACT_BIN_HARD_CAP,
+            "f_strict_price_band": list(_cfg.F_STRICT_PRICE_BAND),
+            "f_strict_recal_band": list(_cfg.F_STRICT_RECAL_PROB_BAND),
+            "f_strict_lead_hours": list(_cfg.F_STRICT_LEAD_HOURS),
+            "f_strict_max_rmse_c": _cfg.F_STRICT_MAX_RMSE_C,
+            "daily_stop_usd":      _cfg.F_STRICT_DAILY_STOP_USD,
+        }
+    except Exception as _pe:
+        _pilot = {"error": f"pilot readout failed: {_pe}"}
+
     _health = {
         "status": "ok",
+        "pilot_mode": _pilot,
         "boot_id": BOOT_ID,
         "boot_ts": BOOT_TS,
         "uptime_s": int(time.time() - _boot),
@@ -1326,9 +1350,18 @@ def _build_signals(weather_markets, weather_cities):
                     )
                     our_prob = round(_ens_prob * 100, 1)
                     our_prob = max(0.1, min(99.9, our_prob))
-                    # Hard cap: exact bins can't exceed 45% (ensemble calibration guard)
+                    # STRATEGY_REWRITE §3.2: hard cap lowered to 35%.
                     if p["direction"] == "exact":
-                        our_prob = min(our_prob, 45.0)
+                        our_prob = min(our_prob, 35.0)
+                    # STRATEGY_REWRITE §3.3: also subtract _bias_c from the
+                    # ensemble-path ftemp for display, so the operator dashboard
+                    # reflects the bias-corrected mean (the prob already
+                    # incorporates it via bias_correction_c above).
+                    if _bias_c:
+                        try:
+                            ftemp_for_display = (_ens_fc.ensemble_mean if _ens_fc.n_ensemble_members > 0 else _ens_fc.multimodel_mean) - _bias_c
+                        except Exception:
+                            ftemp_for_display = None
                     # Extract ftemp for display (use ensemble mean)
                     ftemp = _ens_fc.ensemble_mean if _ens_fc.n_ensemble_members > 0 else _ens_fc.multimodel_mean
                     sigma = _ens_fc.blended_sigma
@@ -1366,7 +1399,13 @@ def _build_signals(weather_markets, weather_cities):
                     _obs_f = _at.get_obs_temp_f(p["city"])
                     if _obs_f is not None:
                         _obs_c = (_obs_f - 32) * 5.0 / 9.0
-                        _now_hour = (datetime.now(timezone.utc).hour - 5) % 24
+                        # STRATEGY_REWRITE §1.4 / §3.1: use real city timezone.
+                        try:
+                            from zoneinfo import ZoneInfo as _ZI
+                            _tz_name = next((c.get("timezone","UTC") for c in CITIES if c["city"] == p["city"]), "UTC")
+                            _now_hour = datetime.now(timezone.utc).astimezone(_ZI(_tz_name)).hour
+                        except Exception:
+                            _now_hour = datetime.now(timezone.utc).hour
                         _max_f = _at.max_achievable_today(_obs_f, _now_hour)
                         _max_c = (_max_f - 32) * 5.0 / 9.0
                         ftemp = _obs_c * 0.4 + min(_max_c, ftemp) * 0.6
@@ -1389,9 +1428,9 @@ def _build_signals(weather_markets, weather_cities):
                 z = (p["threshold_c"] - ftemp) / sigma
                 our_prob = round(_ncdf(z) * 100, 1)
             our_prob = max(0.1, min(99.9, our_prob))
-            # Hard cap: no single exact bin should exceed 45%
+            # STRATEGY_REWRITE §3.2: hard cap lowered to 35%.
             if p["direction"] == "exact":
-                our_prob = min(our_prob, 45.0)
+                our_prob = min(our_prob, 35.0)
         # Use real market price from tokens
         _tkns = mkt.get('tokens', [])
         _yes_mp = 0
@@ -1443,12 +1482,83 @@ def _build_signals(weather_markets, weather_cities):
                     }
             except Exception as _se_err:
                 logger.debug("Station edge failed for %s: %s", p["city"], _se_err)
+        # ── F-STRICT GATE + RECAL ─────────────────────────────────────
+        # STRATEGY_REWRITE §2.1. Apply the recalibration map and the F-Strict
+        # filter; if the signal does not pass, demote to SKIP and tag the
+        # reason. Pilot-city restriction is enforced here too.
+        try:
+            from src.strategy_gate import (
+                f_strict_pass, recal_prob, shadow_lane_ok,
+            )
+            from config import (
+                ENABLE_F_STRICT, PILOT_CITY_ONLY, ABOVE_BELOW_SHADOW,
+            )
+            _raw_prob = our_prob / 100.0
+            _recal = round(recal_prob(_raw_prob) * 100.0, 1)
+            _mins_left = None
+            try:
+                _end = datetime.fromisoformat(mkt.get("end_date","").replace("Z","+00:00"))
+                _mins_left = (_end - datetime.now(timezone.utc)).total_seconds() / 60.0
+            except Exception:
+                pass
+            _gate_reason = ""
+            _gate_ok = False
+            _lane = "none"
+            if p["direction"] == "exact" and ENABLE_F_STRICT and _mins_left is not None:
+                _ok, _why, _rp = f_strict_pass(
+                    price=mp / 100.0,
+                    raw_prob=_raw_prob,
+                    mins_to_resolution=_mins_left,
+                    city=p["city"],
+                    bin_type="exact",
+                )
+                if _ok:
+                    _gate_ok = True
+                    _lane = "f_strict"
+                _gate_reason = _why
+            elif p["direction"] in ("above", "below") and ABOVE_BELOW_SHADOW and _mins_left is not None:
+                _ok, _why = shadow_lane_ok(
+                    raw_prob=_raw_prob,
+                    price=mp / 100.0,
+                    mins_to_resolution=_mins_left,
+                )
+                if _ok:
+                    _gate_ok = True
+                    _lane = "shadow_above_below"
+                _gate_reason = _why
+            # Pilot-city restriction
+            if PILOT_CITY_ONLY and p["city"] != PILOT_CITY_ONLY:
+                _gate_ok = False
+                _gate_reason = f"pilot-city only ({PILOT_CITY_ONLY})"
+                _lane = "none"
+            if not _gate_ok:
+                sig_type = "SKIP"
+            # Recompute EV/Kelly against the recalibrated prob (display + sizing)
+            our_prob_recal = _recal
+            ev_recal = round(our_prob_recal - mp, 1)
+            _pr = our_prob_recal / 100.0
+            _Pm = max(0.01, mp / 100.0)
+            ev_dollar_recal = round((_pr - _Pm) / _Pm * 100.0, 1)
+            kelly_recal = round(max(0.0, (_pr * (1.0 / _Pm) - 1.0) / ((1.0 / _Pm) - 1.0) * 100.0), 1) if mp > 0 else 0
+        except Exception as _gate_err:
+            logger.debug("F-strict gate error %s: %s", p.get("city"), _gate_err)
+            our_prob_recal = our_prob
+            ev_recal = ev
+            ev_dollar_recal = ev_dollar
+            kelly_recal = kelly
+            _gate_reason = "gate error"
+            _lane = "none"
+
         signals.append({
             "question": mkt.get("question", ""),
             "city": p["city"], "metric": p["metric"],
             "signal": sig_type, "confidence": conf,
-            "our_prob": our_prob, "market_price": round(mp, 1),
-            "theo_ev": ev, "ev_dollar": ev_dollar, "forecast": df, "unit": unit,
+            "our_prob": our_prob, "our_prob_recal": our_prob_recal,
+            "lane": _lane, "gate_reason": _gate_reason,
+            "market_price": round(mp, 1),
+            "theo_ev": ev_recal, "theo_ev_raw": ev,
+            "ev_dollar": ev_dollar_recal, "ev_dollar_raw": ev_dollar,
+            "forecast": df, "unit": unit,
             "ftemp_c": round(ftemp, 3), "threshold_c": p["threshold_c"],
             "threshold": p["threshold"], "sigma": round(sigma, 2),
             "agreement": agreement,
@@ -1458,7 +1568,8 @@ def _build_signals(weather_markets, weather_cities):
             "ensemble_spread": round(_ens_fc.ensemble_max - _ens_fc.ensemble_min, 1) if _ens_fc and _ens_fc.n_ensemble_members > 0 else 0,
             "data_quality": _ens_fc.data_quality if _ens_fc else "fallback",
             **_se_data,
-            "kelly": kelly, "active": mkt.get("active", True),
+            "kelly": kelly_recal, "kelly_raw": kelly,
+            "active": mkt.get("active", True),
             "end_date": mkt.get("end_date", ""),
             "direction": p["direction"],
             "slug": mkt.get("slug", ""),
@@ -2940,21 +3051,35 @@ def _run_auto_trade_cycle():
         if _2bin_traded:
             logger.info("EXACT_2BIN: placed %d pair trades this cycle", _2bin_traded)
 
-        # ── NO_HARVEST DISABLED — penny-picking loses money long-term ──
-        # 90 trades earned $5.53 total ($0.06/trade), one loss wipes 400 wins.
-        # Keeping code for reference but bypassing execution.
-        if False and RUFLO_AVAILABLE and sigs:
+        # ── NO_HARVEST V2 — STRATEGY_REWRITE §2.2 (rake business) ──
+        # Re-enabled with staged size cap + depth check. Operator-approved
+        # staged scaling: $5 → $10 (current) → $25.
+        try:
+            from config import (
+                ENABLE_NO_HARVEST_V2, NO_HARVEST_CAP_USD, NO_HARVEST_MIN_DEPTH_USD,
+            )
+        except Exception:
+            ENABLE_NO_HARVEST_V2 = False
+            NO_HARVEST_CAP_USD = 5
+            NO_HARVEST_MIN_DEPTH_USD = 50
+        if ENABLE_NO_HARVEST_V2 and RUFLO_AVAILABLE and sigs:
             try:
                 no_opps = _ruflo_no_harvester.scan(sigs)
                 no_traded = 0
                 for _no_opp in no_opps:
-                    if no_traded >= 5:
+                    if no_traded >= 10:
                         break
                     _no_tok = _no_opp.get('no_token_id', '')
                     if not _no_tok or _no_tok in _traded_tokens:
                         continue
                     _no_px  = _no_opp['no_price']
-                    _no_sz  = _no_opp['size']
+                    _no_sz  = min(_no_opp['size'], NO_HARVEST_CAP_USD)
+                    # Depth check: require ≥ NO_HARVEST_MIN_DEPTH_USD visible
+                    _depth = _no_opp.get('no_depth_usd') or _no_opp.get('depth_usd') or 0
+                    if _depth and _depth < NO_HARVEST_MIN_DEPTH_USD:
+                        logger.info("NO_HARVEST skip %s: depth $%.0f < $%.0f",
+                                    _no_opp.get('city'), _depth, NO_HARVEST_MIN_DEPTH_USD)
+                        continue
                     _city   = _no_opp['city']
                     _exp    = _no_opp['expected_return_pct']
                     _oprob  = _no_opp['our_prob']

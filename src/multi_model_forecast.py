@@ -536,7 +536,9 @@ def ensemble_bin_probability(
     # verified RMSE-based sigma (minimum 1.5°C for exact bins). This prevents
     # the model from claiming >50% on any single 1°C bin.
     if direction == "exact" and blended > 0.30:
-        _verified_sigma = max(fc.blended_sigma, 1.5)  # floor at 1.5°C (historical RMSE)
+        # STRATEGY_REWRITE §1.2 + §3.2: median per-station RMSE is 1.60°C, so a
+        # 1.5°C floor was structurally over-confident. Raise to 2.5°C.
+        _verified_sigma = max(fc.blended_sigma, 2.5)
         _mean = sum(members) / len(members) if members else (fc.ensemble_mean or 20.0)
         _conservative_prob = _gaussian_bin_prob(
             _mean, _verified_sigma, threshold_c, direction, bin_width_c,
@@ -558,7 +560,8 @@ def ensemble_bin_probability(
     # Even the best day-ahead forecasts can't be >45% certain about a 1°C bin
     # when the temperature distribution has 7+ possible outcomes.
     if direction == "exact":
-        blended = min(blended, 0.45)
+        # STRATEGY_REWRITE §3.2: lowered hard cap from 0.45 → 0.35.
+        blended = min(blended, 0.35)
 
     # Clamp to reasonable range
     return max(0.001, min(0.999, blended))
