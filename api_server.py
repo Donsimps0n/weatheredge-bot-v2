@@ -1405,6 +1405,15 @@ def _build_signals(weather_markets, weather_cities):
     _recovery_first = sorted(_recovery_cities_lower & by_city.keys())
     _others = sorted(by_city.keys() - _recovery_cities_lower)
     cities = _recovery_first + _others
+    # Pre-commit up to 3 exact bins per whitelist city before round-robin opens.
+    # Boundary bins (idx 0-1 after sort) are handled by round-robin round 0-1;
+    # exact bins (idx 2+) would otherwise never reach the 60-signal cap.
+    _EXACT_PER_CITY = 3
+    for _wc in _recovery_first:
+        _exact_bins = [t for t in by_city[_wc] if t[1]["direction"] == "exact"]
+        for _t in _exact_bins[:_EXACT_PER_CITY]:
+            if len(diverse) < 60 and _t not in diverse:
+                diverse.append(_t)
     while len(diverse) < min(60, sum(len(v) for v in by_city.values())):
         added = False
         for c in cities:
@@ -1719,9 +1728,28 @@ def _build_signals(weather_markets, weather_cities):
                         _gate_ok = False
                         _gate_reason = f"pilot-city only ({PILOT_CITY_ONLY})"
                         _lane = "none"
+                elif (RECOVERY_EXACT and p["direction"] == "exact"
+                        and p["city"] in RECOVERY_CITIES and _mins_left is not None):
+                    # ── RECOVERY MODE: exact-bin gate (secondary lane) ─────────
+                    _ok, _why, _rp = f_strict_pass(
+                        price=mp / 100.0,
+                        raw_prob=_raw_prob,
+                        mins_to_resolution=_mins_left,
+                        city=p["city"],
+                        bin_type="exact",
+                    )
+                    if _ok:
+                        _gate_ok = True
+                        _lane = "recovery_exact"
+                    else:
+                        _gate_reason = _why
+                        logger.warning(
+                            "RECOVERY_REJECT city=%s dir=exact mp=%.2f recal=%.3f mins=%s why=%s",
+                            p["city"], mp, recal_prob(_raw_prob), _mins_left, _why,
+                        )
                 else:
-                    # RECOVERY_MODE=True but direction is exact/unknown — always skip
-                    _gate_reason = f"recovery_mode: direction '{p['direction']}' not above/below"
+                    # RECOVERY_MODE=True but direction/city not routed — always skip
+                    _gate_reason = f"recovery_mode: direction '{p['direction']}' not routed"
                     _gate_ok = False
 
                 if not _gate_ok:
@@ -1801,6 +1829,8 @@ def _build_signals(weather_markets, weather_cities):
     _exact_groups: dict = {}
     for _si, _sig in enumerate(signals):
         if _sig.get('direction') == 'exact':
+            if _sig.get('lane') == 'recovery_exact':
+                continue  # partial pool — normalization would inflate; preserve raw CDF prob
             _gk = (_sig['city'], _sig.get('end_date', ''))
             _exact_groups.setdefault(_gk, []).append(_si)
 
@@ -2666,7 +2696,7 @@ def _run_auto_trade_cycle():
             _is_proof_city = (cfg["paper_mode"] and not _meta_proof_consumed
                               and _meta_proof_city_lower_ev
                               and _s.get("city", "").lower() == _meta_proof_city_lower_ev)
-            _is_recovery_lane = _s.get("lane") == "recovery_above_below"
+            _is_recovery_lane = _s.get("lane") in ("recovery_above_below", "recovery_exact")
             _ev_bump = 0.0 if (_is_proof_city or _is_recovery_lane) else _MIN_EV_BUMP.get(_dq, 0)
             # Knob C: station reliability EV addon (from bias agent)
             # Skip bias addon for recovery lane — recovery gate already checked edge

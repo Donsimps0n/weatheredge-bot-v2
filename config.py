@@ -167,6 +167,7 @@ RECOVERY_AB_MAX_MARKET_PRICE: float = 0.65    # don't buy above 65c (raised 2026
 RECOVERY_AB_MIN_RECAL_PROB: float   = 0.25    # recalibrated probability minimum
 RECOVERY_AB_MIN_EDGE_PP: float      = 0.05    # recal must exceed market by ≥5pp
 RECOVERY_AB_DAILY_STOP_USD: float   = -10.00  # halt new entries if daily PnL below this
+RECOVERY_EXACT: bool = True   # route whitelist exact bins through f_strict gate in recovery mode
 
 # Recovery mode: disable all non-core strategy agent modules
 RECOVERY_DISABLE_STATION_EDGE_OVERRIDE: bool = True  # use ensemble-only prob path
