@@ -1701,6 +1701,12 @@ def _build_signals(weather_markets, weather_cities):
             kelly_recal = kelly
             _gate_reason = "gate error"
             _lane = "none"
+            # Ensure variables referenced in signals.append() are always defined
+            # even when the try block throws before reaching their assignments.
+            _recovery_log = {}
+            _ensemble_prob_pct = _raw_prob_pre_se_pct  # defined before try block
+            _date_parse_ok = False
+            _mins_left = None
 
         # ── Recovery mode: fixed sizing override ─────────────────────────────
         if RECOVERY_MODE and DISABLE_KELLY and sig_type != "SKIP":
