@@ -127,6 +127,7 @@ def f_strict_pass(
     mins_to_resolution: Optional[float],  # FIX: was float, can be None on date parse fail
     city: str,
     bin_type: str = "exact_1bin",
+    allow_unknown_rmse: bool = False,     # recovery_exact only: pass True to allow missing RMSE
 ) -> tuple[bool, str, float]:
     """
     Returns (ok, reason, recalibrated_prob).
@@ -134,6 +135,11 @@ def f_strict_pass(
 
     NOTE: ENABLE_F_STRICT=False in recovery build — this function is kept
     for completeness but is not called in the normal trading path.
+
+    allow_unknown_rmse: when True, a missing (None) station RMSE does not
+    fail the gate — instead it is logged and allowed. This flag is set only
+    by the recovery_exact call site. All other callers use the default (False)
+    and retain fail-closed behavior.
     """
     if bin_type not in ("exact_1bin", "exact_2bin", "exact"):
         return False, f"bin_type {bin_type} not in F-Strict cohort", 0.0
@@ -144,9 +150,18 @@ def f_strict_pass(
         return False, "mins_to_resolution is None — end_date parse failed, gate blocked", 0.0
     if not (F_STRICT_LEAD_MIN_MIN <= mins_to_resolution <= F_STRICT_LEAD_MAX_MIN):
         return False, f"lead {mins_to_resolution:.0f}m outside [{F_STRICT_LEAD_MIN_MIN},{F_STRICT_LEAD_MAX_MIN}]", 0.0
-    if not station_rmse_ok(city, F_STRICT_MAX_RMSE_C):
-        rmse = station_rmse_c(city)
-        return False, f"station {city} rmse={rmse} > {F_STRICT_MAX_RMSE_C}°C (or unknown)", 0.0
+    rmse = station_rmse_c(city)
+    if rmse is None:
+        if allow_unknown_rmse:
+            import logging as _logging
+            _logging.getLogger(__name__).warning(
+                "RECOVERY_EXACT_RMSE_UNKNOWN city=%s — RMSE not on record, allowing (recovery_exact only)",
+                city,
+            )
+        else:
+            return False, f"station {city} rmse={rmse} > {F_STRICT_MAX_RMSE_C}°C (or unknown)", 0.0
+    elif rmse > F_STRICT_MAX_RMSE_C:
+        return False, f"station {city} rmse={rmse:.2f} > {F_STRICT_MAX_RMSE_C}°C", 0.0
     rp = recal_prob(raw_prob)
     if not (F_STRICT_RECAL_PROB_MIN <= rp <= F_STRICT_RECAL_PROB_MAX):
         return False, f"recal_prob {rp:.3f} outside [{F_STRICT_RECAL_PROB_MIN},{F_STRICT_RECAL_PROB_MAX}]", rp

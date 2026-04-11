@@ -1744,6 +1744,7 @@ def _build_signals(weather_markets, weather_cities):
                         mins_to_resolution=_mins_left,
                         city=p["city"],
                         bin_type="exact",
+                        allow_unknown_rmse=True,  # recovery_exact: missing RMSE is "unknown but allowed"
                     )
                     if _ok:
                         _gate_ok = True
