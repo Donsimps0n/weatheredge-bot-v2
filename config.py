@@ -146,11 +146,14 @@ ABOVE_BELOW_SHADOW    = False   # No longer shadow — it IS the lane
 # Set RECOVERY_MODE=False to return to full-feature operation.
 RECOVERY_MODE: bool = True
 
-# Hard city whitelist — only these 4 cities generate signals.
+# Hard city whitelist — only these 6 cities generate signals.
 # Selection basis: station_bias_summary.csv std dev (lowest = most predictable):
 #   Munich 0.98°F (n=24), Singapore 1.18°F (n=16),
 #   London 1.37°F (n=100), Paris 1.62°F (n=43)
-RECOVERY_CITIES: set = {"Munich", "Singapore", "London", "Paris"}
+# Added 2026-04-11: Milan and Shanghai — top boundary bins ("above 23°C" /
+# "above 27°C") are priced in [10–45¢] band in spring conditions, providing
+# candidate flow. Bias profiles unconfirmed; monitoring only.
+RECOVERY_CITIES: set = {"Munich", "Singapore", "London", "Paris", "Milan", "Shanghai"}
 
 # Fixed trade size — Kelly disabled in recovery mode.
 FIXED_TRADE_SIZE_USD: float = 2.00
