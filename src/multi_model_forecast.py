@@ -444,9 +444,16 @@ def ensemble_bin_probability(
         members = [m - bias_correction_c for m in members]
 
     if not members:
-        # Fall back to Gaussian with blended sigma
+        # Fall back to Gaussian with blended sigma.
+        # Use explicit availability checks rather than Python truthiness so a
+        # valid mean of 0.0°C is not discarded in favour of the 20.0 literal.
+        _fc_center = (
+            fc.ensemble_mean if fc.n_ensemble_members > 0
+            else fc.multimodel_mean if fc.n_models > 0
+            else 20.0
+        )
         return _gaussian_bin_prob(
-            fc.ensemble_mean or fc.multimodel_mean or 20.0,
+            _fc_center,
             fc.blended_sigma,
             threshold_c, direction, bin_width_c,
         )

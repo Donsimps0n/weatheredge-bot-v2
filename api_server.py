@@ -1446,6 +1446,7 @@ def _build_signals(weather_markets, weather_cities):
         # ── PRIMARY: Ensemble-based probability (82 members + 7 models) ──
         _used_ensemble = False
         _ens_fc = None
+        _data_quality_override = None  # set below when recovery_exact redirects to static sigma
         _bias_c = _bias_agent.get_correction_c(p["city"]) if HAS_BIAS_AGENT else _CITY_BIAS_C.get(p["city"].lower(), 0.0)
         if _ENSEMBLE_AVAILABLE:
             try:
@@ -1487,6 +1488,20 @@ def _build_signals(weather_markets, weather_cities):
                     )
             except Exception as _ens_err:
                 logger.warning("Ensemble failed for %s, falling back to static sigma: %s", p["city"], _ens_err)
+
+        # recovery_exact + quality=fallback: static sigma is more reliable than
+        # the empty-member Gaussian (hardcoded 20°C center, 2.5°C sigma).
+        # Redirect to the static-sigma block below and label data quality accordingly.
+        if (_used_ensemble and _ens_fc is not None
+                and _ens_fc.data_quality == "fallback"
+                and RECOVERY_EXACT and p["direction"] == "exact"
+                and p["city"].lower() in _recovery_cities_lower):
+            _used_ensemble = False
+            _data_quality_override = "static_sigma"
+            logger.debug(
+                "RECOVERY_EXACT_STATIC city=%s thr=%.1f — ensemble fallback, switching to static sigma",
+                p["city"], p["threshold_c"],
+            )
 
         # ── FALLBACK: Static sigma Gaussian CDF (old method) ──
         if not _used_ensemble:
@@ -1805,7 +1820,7 @@ def _build_signals(weather_markets, weather_cities):
             "prob_source": "ensemble" if _used_ensemble else "static_sigma",
             "ensemble_members": _ens_fc.n_ensemble_members if _ens_fc else 0,
             "ensemble_spread": round(_ens_fc.ensemble_max - _ens_fc.ensemble_min, 1) if _ens_fc and _ens_fc.n_ensemble_members > 0 else 0,
-            "data_quality": _ens_fc.data_quality if _ens_fc else "fallback",
+            "data_quality": _data_quality_override if _data_quality_override is not None else (_ens_fc.data_quality if _ens_fc else "fallback"),
             **_se_data,
             "kelly": kelly_recal, "kelly_raw": kelly,
             "active": mkt.get("active", True),
