@@ -490,6 +490,37 @@ class TradingScheduler:
                 except Exception as _tr_exc:
                     logger.warning("trade_resolver raised: %s", _tr_exc)
 
+            # Calibration backfill — wire recal_prob() map to live resolutions.
+            # Runs at most once per hour; safe to call every cycle (no-ops if
+            # < _CALIB_INTERVAL_S seconds have elapsed since last run).
+            _CALIB_INTERVAL_S = 3600
+            if not hasattr(self, "_last_calib_ts"):
+                self._last_calib_ts = 0.0
+            _now_ts = time.time()
+            if _now_ts - self._last_calib_ts >= _CALIB_INTERVAL_S:
+                try:
+                    import os as _os
+                    from scripts.calibration_backfill import backfill as _calib_backfill
+                    _ledger_path = _os.environ.get("LEDGER_DB", "ledger.db")
+                    _store_path = _os.environ.get("ACCURACY_STORE", "accuracy_store.json")
+                    _calib_result = _calib_backfill(_ledger_path, _store_path)
+                    _added = _calib_result.get("added", 0) if isinstance(_calib_result, dict) else 0
+                    _total = _calib_result.get("total_resolutions", 0) if isinstance(_calib_result, dict) else 0
+                    if _added > 0:
+                        logger.info(
+                            "calibration_backfill: added=%d total_resolutions=%d",
+                            _added, _total,
+                        )
+                    else:
+                        logger.debug("calibration_backfill: no new resolutions (total=%d)", _total)
+                except ImportError:
+                    logger.debug("calibration_backfill not available — skipping")
+                except Exception as _calib_exc:
+                    logger.warning("calibration_backfill raised: %s", _calib_exc)
+                finally:
+                    # Always update timestamp so we don't retry every cycle on error
+                    self._last_calib_ts = _now_ts
+
             # Check HRRR polling
             should_poll = self.should_poll_hrrr(now_utc, self.last_hrrr_poll)
             if should_poll:

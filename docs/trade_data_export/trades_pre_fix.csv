@@ -1,0 +1,2 @@
+id,ts,question,city,signal,token_id,price,size,spend,ev,ev_dollar,kelly,our_prob,mkt_price,sigma,mode,clob_spread,clob_edge_at_fill,resolved,resolution_price,pnl,won,resolved_at,meta
+1,2026-03-30T12:03:46.359100+00:00,Will the highest temperature in Ankara be 15°C on April 1?,Ankara,BUY YES,22058598566260020587403511924913473033235081953345188849115009245725359607754,0.28,38.0,10.64,6.8,25.7,9.3,33.3,26.5,,PAPER,3.8,18.1,,,,,,{}

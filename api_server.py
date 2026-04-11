@@ -67,6 +67,56 @@ except ImportError:
     EXACT_2BIN_MIN_COMBINED_EDGE = 0.10
     EXACT_2BIN_MAX_COMBINED_COST = 0.40
 
+# ── RECOVERY BUILD config ──────────────────────────────────────────────────
+try:
+    from config import (
+        RECOVERY_MODE, RECOVERY_CITIES, FIXED_TRADE_SIZE_USD, DISABLE_KELLY,
+        RECOVERY_DISABLE_STATION_EDGE_OVERRIDE,
+        RECOVERY_DISABLE_BINSNIPER, RECOVERY_DISABLE_GFS_REFRESH,
+        RECOVERY_DISABLE_OBS_CONFIRM, RECOVERY_DISABLE_NO_HARVEST,
+        RECOVERY_DISABLE_YES_HARVEST, RECOVERY_DISABLE_DUTCH_BOOK,
+        RECOVERY_DISABLE_CROSS_CITY, RECOVERY_DISABLE_METAR_INTEL,
+        RECOVERY_DISABLE_LAST_MILE, RECOVERY_DISABLE_EXIT_AGENTS,
+        RECOVERY_DISABLE_HEDGE_MANAGER,
+        RECOVERY_AB_MIN_LEAD_MIN, RECOVERY_AB_MAX_LEAD_MIN,
+        RECOVERY_AB_MIN_MARKET_PRICE, RECOVERY_AB_MAX_MARKET_PRICE,
+        RECOVERY_AB_MIN_RECAL_PROB, RECOVERY_AB_MIN_EDGE_PP,
+        RECOVERY_AB_DAILY_STOP_USD,
+    )
+except ImportError:
+    RECOVERY_MODE = False
+    RECOVERY_CITIES = set()
+    FIXED_TRADE_SIZE_USD = 2.0
+    DISABLE_KELLY = True
+    RECOVERY_DISABLE_STATION_EDGE_OVERRIDE = True
+    RECOVERY_DISABLE_BINSNIPER = True
+    RECOVERY_DISABLE_GFS_REFRESH = True
+    RECOVERY_DISABLE_OBS_CONFIRM = True
+    RECOVERY_DISABLE_NO_HARVEST = True
+    RECOVERY_DISABLE_YES_HARVEST = True
+    RECOVERY_DISABLE_DUTCH_BOOK = True
+    RECOVERY_DISABLE_CROSS_CITY = True
+    RECOVERY_DISABLE_METAR_INTEL = True
+    RECOVERY_DISABLE_LAST_MILE = True
+    RECOVERY_DISABLE_EXIT_AGENTS = True
+    RECOVERY_DISABLE_HEDGE_MANAGER = True
+    RECOVERY_AB_MIN_LEAD_MIN = 360.0
+    RECOVERY_AB_MAX_LEAD_MIN = 1440.0
+    RECOVERY_AB_MIN_MARKET_PRICE = 0.10
+    RECOVERY_AB_MAX_MARKET_PRICE = 0.45
+    RECOVERY_AB_MIN_RECAL_PROB = 0.25
+    RECOVERY_AB_MIN_EDGE_PP = 0.05
+    RECOVERY_AB_DAILY_STOP_USD = -10.0
+
+# ── Recovery gate module ───────────────────────────────────────────────────
+try:
+    from src.recovery_gate import recovery_ab_pass, parse_end_date_safe
+    _RECOVERY_GATE_OK = True
+    logger.info("RECOVERY_BUILD: recovery_gate loaded — recovery_ab_pass active")
+except ImportError as _rge:
+    _RECOVERY_GATE_OK = False
+    logger.warning("RECOVERY_BUILD: recovery_gate not available (%s)", _rge)
+
 def _get_local_hour(city_name: str) -> int:
     """Get current local hour for a city. Falls back to EST if unknown."""
     tz = _CITY_TZ.get(city_name.lower())
@@ -280,6 +330,42 @@ try:
     logger.info("Hedge Manager loaded")
 except ImportError:
     logger.warning("hedge_manager not available")
+
+# ── RECOVERY MODE: disable all non-core strategy agents ────────────────────
+if RECOVERY_MODE:
+    if RECOVERY_DISABLE_BINSNIPER and HAS_BIN_SNIPER:
+        HAS_BIN_SNIPER = False
+        _bin_sniper = None
+        logger.info("RECOVERY_MODE: BinSniper disabled")
+    if RECOVERY_DISABLE_GFS_REFRESH and HAS_GFS_REFRESH:
+        HAS_GFS_REFRESH = False
+        _gfs_refresh = None
+        logger.info("RECOVERY_MODE: GFSRefreshAgent disabled")
+    if RECOVERY_DISABLE_OBS_CONFIRM and HAS_OBS_CONFIRM:
+        HAS_OBS_CONFIRM = False
+        _obs_confirm = None
+        logger.info("RECOVERY_MODE: ObsConfirmAgent disabled")
+    if RECOVERY_DISABLE_DUTCH_BOOK and HAS_DUTCH_BOOK:
+        HAS_DUTCH_BOOK = False
+        logger.info("RECOVERY_MODE: DutchBookScanner disabled")
+    if RECOVERY_DISABLE_CROSS_CITY and HAS_CROSS_CITY:
+        HAS_CROSS_CITY = False
+        logger.info("RECOVERY_MODE: CrossCityCorrelationEngine disabled")
+    if RECOVERY_DISABLE_METAR_INTEL and HAS_METAR_INTEL:
+        HAS_METAR_INTEL = False
+        logger.info("RECOVERY_MODE: METARIntel disabled")
+    if RECOVERY_DISABLE_LAST_MILE and HAS_LAST_MILE:
+        HAS_LAST_MILE = False
+        _last_mile = None
+        logger.info("RECOVERY_MODE: LastMileAgent disabled")
+    if RECOVERY_DISABLE_HEDGE_MANAGER and HAS_HEDGE:
+        HAS_HEDGE = False
+        _hedge_mgr = None
+        logger.info("RECOVERY_MODE: HedgeManager disabled")
+    logger.info(
+        "RECOVERY_MODE active — lane=above/below cities=%s size=$%.2f kelly=disabled",
+        sorted(RECOVERY_CITIES), FIXED_TRADE_SIZE_USD,
+    )
 
 # Register new agents in shared state
 if RUFLO_AVAILABLE:
@@ -1495,42 +1581,90 @@ def _build_signals(weather_markets, weather_cities):
             )
             _raw_prob = our_prob / 100.0
             _recal = round(recal_prob(_raw_prob) * 100.0, 1)
+
+            # ── Date parsing: handles ISO 8601 AND display formats ──────────
             _mins_left = None
-            try:
-                _end = datetime.fromisoformat(mkt.get("end_date","").replace("Z","+00:00"))
-                _mins_left = (_end - datetime.now(timezone.utc)).total_seconds() / 60.0
-            except Exception:
-                pass
+            _date_parse_ok = False
+            _raw_end_str = mkt.get("end_date", "") or ""
+            if _RECOVERY_GATE_OK:
+                _end_dt = parse_end_date_safe(_raw_end_str)
+            else:
+                _end_dt = None
+                try:
+                    _end_dt = datetime.fromisoformat(_raw_end_str.replace("Z", "+00:00"))
+                except Exception:
+                    pass
+            if _end_dt is not None:
+                _mins_left = (_end_dt - datetime.now(timezone.utc)).total_seconds() / 60.0
+                _date_parse_ok = True
+            else:
+                logger.warning("end_date parse failed: %r — gate will block", _raw_end_str)
+
+            # Store ensemble prob before any override (for logging)
+            _ensemble_prob_pct = our_prob  # captured before station_edge step
+
             _gate_reason = ""
             _gate_ok = False
             _lane = "none"
-            if p["direction"] == "exact" and ENABLE_F_STRICT and _mins_left is not None:
-                _ok, _why, _rp = f_strict_pass(
-                    price=mp / 100.0,
-                    raw_prob=_raw_prob,
-                    mins_to_resolution=_mins_left,
+            _recovery_log: dict = {}
+
+            # ── RECOVERY MODE: above/below gate (primary lane) ─────────────
+            if (RECOVERY_MODE and _RECOVERY_GATE_OK
+                    and p["direction"] in ("above", "below")):
+                # City whitelist enforced inside recovery_ab_pass
+                _bias_c_for_log = _bias_agent.get_correction_c(p["city"]) if HAS_BIAS_AGENT else 0.0
+                _ok, _why, _recovery_log = recovery_ab_pass(
                     city=p["city"],
-                    bin_type="exact",
-                )
-                if _ok:
-                    _gate_ok = True
-                    _lane = "f_strict"
-                _gate_reason = _why
-            elif p["direction"] in ("above", "below") and ABOVE_BELOW_SHADOW and _mins_left is not None:
-                _ok, _why = shadow_lane_ok(
-                    raw_prob=_raw_prob,
-                    price=mp / 100.0,
+                    direction=p["direction"],
+                    market_price=mp / 100.0,
+                    recal_prob=recal_prob(_raw_prob),
                     mins_to_resolution=_mins_left,
+                    raw_prob=_raw_prob,
+                    ensemble_prob=_ensemble_prob_pct / 100.0,
+                    bias_correction_c=_bias_c_for_log,
+                    sigma_c=float(p.get("sigma", 2.5) or 2.5),
                 )
+                _recovery_log["date_parse_ok"] = _date_parse_ok
+                _recovery_log["end_date_raw"] = _raw_end_str
                 if _ok:
                     _gate_ok = True
-                    _lane = "shadow_above_below"
-                _gate_reason = _why
-            # Pilot-city restriction
-            if PILOT_CITY_ONLY and p["city"] != PILOT_CITY_ONLY:
+                    _lane = "recovery_above_below"
+                else:
+                    _gate_reason = _why
+            elif not RECOVERY_MODE:
+                # ── Legacy gates (only active when RECOVERY_MODE=False) ─────
+                if p["direction"] == "exact" and ENABLE_F_STRICT and _mins_left is not None:
+                    _ok, _why, _rp = f_strict_pass(
+                        price=mp / 100.0,
+                        raw_prob=_raw_prob,
+                        mins_to_resolution=_mins_left,
+                        city=p["city"],
+                        bin_type="exact",
+                    )
+                    if _ok:
+                        _gate_ok = True
+                        _lane = "f_strict"
+                    _gate_reason = _why
+                elif p["direction"] in ("above", "below") and ABOVE_BELOW_SHADOW and _mins_left is not None:
+                    _ok, _why = shadow_lane_ok(
+                        raw_prob=_raw_prob,
+                        price=mp / 100.0,
+                        mins_to_resolution=_mins_left,
+                    )
+                    if _ok:
+                        _gate_ok = True
+                        _lane = "shadow_above_below"
+                    _gate_reason = _why
+                # Legacy pilot-city restriction
+                if PILOT_CITY_ONLY and p["city"] != PILOT_CITY_ONLY:
+                    _gate_ok = False
+                    _gate_reason = f"pilot-city only ({PILOT_CITY_ONLY})"
+                    _lane = "none"
+            else:
+                # RECOVERY_MODE=True but direction is exact/unknown — always skip
+                _gate_reason = f"recovery_mode: direction '{p['direction']}' not above/below"
                 _gate_ok = False
-                _gate_reason = f"pilot-city only ({PILOT_CITY_ONLY})"
-                _lane = "none"
+
             if not _gate_ok:
                 sig_type = "SKIP"
             # Recompute EV/Kelly against the recalibrated prob (display + sizing)
@@ -1548,6 +1682,11 @@ def _build_signals(weather_markets, weather_cities):
             kelly_recal = kelly
             _gate_reason = "gate error"
             _lane = "none"
+
+        # ── Recovery mode: fixed sizing override ─────────────────────────────
+        if RECOVERY_MODE and DISABLE_KELLY and sig_type != "SKIP":
+            kelly_recal = 0.0  # Kelly disabled
+            # Fixed size will be applied at trade placement; store the cap here
 
         signals.append({
             "question": mkt.get("question", ""),
@@ -1575,6 +1714,11 @@ def _build_signals(weather_markets, weather_cities):
             "slug": mkt.get("slug", ""),
             "condition_id": mkt.get("condition_id", ""),
             "tokens": mkt.get("tokens", []),
+            # ── Recovery audit trail ─────────────────────────────────────────
+            "_recovery_log": _recovery_log,
+            "_ensemble_prob_pct": _ensemble_prob_pct,
+            "_date_parse_ok": _date_parse_ok,
+            "_mins_left": _mins_left,
         })
     # ── Post-process: normalize exact bin probabilities per city+date group ──
     # Each bin was computed independently with a Normal CDF slice.  When sigma
@@ -2726,12 +2870,21 @@ def _run_auto_trade_cycle():
             # Size = dollars to spend / price = number of shares
             # Polymarket min order is $1, so ensure size * price >= 1
             import math
-            _coord_mult = float(sig.get("coordinator_size_mult", 1.0))
-            _lm_mult = float(sig.get("last_mile_multiplier", 1.0))
-            _station_mult = float(sig.get("size_mult", 1.0))  # Knob D: station reliability sizing
-            _total_mult = _coord_mult * _lm_mult * float(_liquidity_mult) * _station_mult
-            _base_size = cfg["max_size"]
-            spend = max(1.0, _base_size * _total_mult)  # coordinator + last_mile + liquidity adjusted
+            # ── RECOVERY MODE: fixed sizing, all multipliers disabled ────────
+            if RECOVERY_MODE and DISABLE_KELLY:
+                spend = FIXED_TRADE_SIZE_USD  # fixed $2, no Kelly, no multipliers
+                _coord_mult = 1.0
+                _lm_mult = 1.0
+                _station_mult = 1.0
+                _total_mult = 1.0
+                _base_size = FIXED_TRADE_SIZE_USD
+            else:
+                _coord_mult = float(sig.get("coordinator_size_mult", 1.0))
+                _lm_mult = float(sig.get("last_mile_multiplier", 1.0))
+                _station_mult = float(sig.get("size_mult", 1.0))  # Knob D: station reliability sizing
+                _total_mult = _coord_mult * _lm_mult * float(_liquidity_mult) * _station_mult
+                _base_size = cfg["max_size"]
+                spend = max(1.0, _base_size * _total_mult)  # coordinator + last_mile + liquidity adjusted
             # ── Depth cap: don't spend more than 25% of displayed side depth ──
             # Prevents paper results from inflating on thin books and protects
             # live fills from walking the book. Only applies when depth is known.
@@ -2802,7 +2955,19 @@ def _run_auto_trade_cycle():
                 "meta_proof_bypass": _this_sig_is_proof_bypass,
                 # Cohort tracking: separate pre/post calibration fix results
                 "boot_id": BOOT_ID,
-                "calibration_v": 2,  # v1=uncapped ensemble, v2=sigma floor 1.5 + 45% cap
+                "calibration_v": 3,  # v3=recovery build, above/below only, 4-city whitelist
+                # ── Recovery audit trail (always present, even when gate fails) ──
+                "recovery_mode": RECOVERY_MODE,
+                "recovery_lane": sig.get("lane", "none"),
+                **(sig.get("_recovery_log") or {}),
+                # Explicit probability audit trail for post-mortem
+                "raw_prob_pct": sig.get("our_prob", 0),           # uncalibrated, post-station-edge
+                "ensemble_prob_pct": sig.get("_ensemble_prob_pct", sig.get("our_prob", 0)),
+                "recal_prob_pct": sig.get("our_prob_recal", 0),   # after recal map
+                "final_prob_used_pct": sig.get("our_prob_recal", 0),  # what EV was computed from
+                "clob_edge_at_fill_warning": "computed from raw_prob not recal — do not use as edge signal",
+                "mins_to_resolution": sig.get("_mins_left"),
+                "date_parse_ok": sig.get("_date_parse_ok", False),
             }
             if cfg["paper_mode"]:
                 trade_info["mode"] = "PAPER"

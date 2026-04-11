@@ -129,18 +129,56 @@ CITIES: List[Dict[str, any]] = [
 # ============================================================================
 
 # Strategy enable flags — controls which strategy families accept new entries
-# ── STRATEGY_REWRITE.md rollout (operator-approved 2026-04-07) ──
-ENABLE_F_STRICT       = True    # Product A: F-Strict predictive cohort
-ENABLE_NO_HARVEST_V2  = True    # Product B: scaled rake business
-ENABLE_ABOVE_BELOW    = True    # SHADOW LANE only — tiny risk, separately tracked
+# ── RECOVERY BUILD (2026-04-11) ──
+# Lane: above/below only, 4 city whitelist, fixed $2 sizing
+# Evidence basis: docs/RECOVERY_BUILD.md
+ENABLE_F_STRICT       = False   # WAS True — produced 0 trades in 89h, disabled
+ENABLE_NO_HARVEST_V2  = False   # WAS True — +$0.31 in 89h, trivial, disabled
+ENABLE_ABOVE_BELOW    = True    # PRIMARY LANE (no longer shadow)
 ENABLE_EXACT_SINGLE   = False   # Disabled: 0/11 WR, systematic overestimation
-ENABLE_EXACT_2BIN     = True    # Allowed only inside F-Strict gate
+ENABLE_EXACT_2BIN     = False   # WAS True — exact bins physically unprofitable
 ENABLE_LONG_HORIZON   = False   # Hard-killed: no model exists for >24h
-PILOT_CITY_ONLY       = "London"  # Drop after 72h success criteria
-ABOVE_BELOW_SHADOW    = True    # Shadow lane only (cap $2/trade, separately tracked).
-                                # NOT philosophically abandoned — paused for the
-                                # clean London pilot. Flip PILOT_CITY_ONLY=None to
-                                # re-enable; the lane logic is always live.
+PILOT_CITY_ONLY       = ""      # Replaced by RECOVERY_CITIES whitelist below
+ABOVE_BELOW_SHADOW    = False   # No longer shadow — it IS the lane
+
+# ── RECOVERY MODE BLOCK (2026-04-11) ────────────────────────────────────────
+# Narrow comeback lane: above/below only, 4-city whitelist, fixed tiny sizing.
+# Set RECOVERY_MODE=False to return to full-feature operation.
+RECOVERY_MODE: bool = True
+
+# Hard city whitelist — only these 4 cities generate signals.
+# Selection basis: station_bias_summary.csv std dev (lowest = most predictable):
+#   Munich 0.98°F (n=24), Singapore 1.18°F (n=16),
+#   London 1.37°F (n=100), Paris 1.62°F (n=43)
+RECOVERY_CITIES: set = {"Munich", "Singapore", "London", "Paris"}
+
+# Fixed trade size — Kelly disabled in recovery mode.
+FIXED_TRADE_SIZE_USD: float = 2.00
+DISABLE_KELLY: bool = True
+
+# Recovery above/below gate parameters
+RECOVERY_AB_MIN_LEAD_MIN: float     = 360.0   # 6h minimum lead time
+RECOVERY_AB_MAX_LEAD_MIN: float     = 1440.0  # 24h maximum lead time
+RECOVERY_AB_MIN_MARKET_PRICE: float = 0.10    # don't buy sub-10c (near-certainty NO)
+RECOVERY_AB_MAX_MARKET_PRICE: float = 0.45    # don't buy above 45c (market already rich)
+RECOVERY_AB_MIN_RECAL_PROB: float   = 0.25    # recalibrated probability minimum
+RECOVERY_AB_MIN_EDGE_PP: float      = 0.05    # recal must exceed market by ≥5pp
+RECOVERY_AB_DAILY_STOP_USD: float   = -10.00  # halt new entries if daily PnL below this
+
+# Recovery mode: disable all non-core strategy agent modules
+RECOVERY_DISABLE_STATION_EDGE_OVERRIDE: bool = True  # use ensemble-only prob path
+RECOVERY_DISABLE_BINSNIPER:      bool = True
+RECOVERY_DISABLE_GFS_REFRESH:    bool = True
+RECOVERY_DISABLE_OBS_CONFIRM:    bool = True
+RECOVERY_DISABLE_EXIT_AGENTS:    bool = True
+RECOVERY_DISABLE_CROSS_CITY:     bool = True
+RECOVERY_DISABLE_DUTCH_BOOK:     bool = True
+RECOVERY_DISABLE_HEDGE_MANAGER:  bool = True
+RECOVERY_DISABLE_METAR_INTEL:    bool = True
+RECOVERY_DISABLE_LAST_MILE:      bool = True
+RECOVERY_DISABLE_NO_HARVEST:     bool = True
+RECOVERY_DISABLE_YES_HARVEST:    bool = True
+# ────────────────────────────────────────────────────────────────────────────
 
 # F-Strict gate parameters (mirror of src/strategy_gate.py constants)
 F_STRICT_PRICE_BAND        = (0.10, 0.20)

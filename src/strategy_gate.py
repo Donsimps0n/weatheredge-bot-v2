@@ -124,18 +124,24 @@ def f_strict_pass(
     *,
     price: float,
     raw_prob: float,
-    mins_to_resolution: float,
+    mins_to_resolution: Optional[float],  # FIX: was float, can be None on date parse fail
     city: str,
     bin_type: str = "exact_1bin",
 ) -> tuple[bool, str, float]:
     """
     Returns (ok, reason, recalibrated_prob).
     Hard gate for the F-Strict predictive cohort.
+
+    NOTE: ENABLE_F_STRICT=False in recovery build — this function is kept
+    for completeness but is not called in the normal trading path.
     """
     if bin_type not in ("exact_1bin", "exact_2bin", "exact"):
         return False, f"bin_type {bin_type} not in F-Strict cohort", 0.0
     if not (F_STRICT_PRICE_MIN <= price <= F_STRICT_PRICE_MAX):
         return False, f"price {price:.3f} outside [{F_STRICT_PRICE_MIN},{F_STRICT_PRICE_MAX}]", 0.0
+    # FIX: explicit None guard — previously would TypeError on comparison then be caught upstream
+    if mins_to_resolution is None:
+        return False, "mins_to_resolution is None — end_date parse failed, gate blocked", 0.0
     if not (F_STRICT_LEAD_MIN_MIN <= mins_to_resolution <= F_STRICT_LEAD_MAX_MIN):
         return False, f"lead {mins_to_resolution:.0f}m outside [{F_STRICT_LEAD_MIN_MIN},{F_STRICT_LEAD_MAX_MIN}]", 0.0
     if not station_rmse_ok(city, F_STRICT_MAX_RMSE_C):
