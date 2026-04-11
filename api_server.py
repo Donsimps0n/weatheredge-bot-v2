@@ -1721,7 +1721,7 @@ def _build_signals(weather_markets, weather_cities):
                 logger.warning(
                     "GATE_EXEC_ERROR city=%s exc=%s: %s",
                     p.get("city"), type(_gate_err).__name__, _gate_err,
-                    exc_info=p.get("city") == "London",  # traceback for one city only
+                    exc_info=False,
                 )
                 _gate_reason = f"gate_exec_error: {type(_gate_err).__name__}: {_gate_err}"
                 sig_type = "SKIP"

@@ -167,7 +167,7 @@ def parse_end_date_safe(s: str):
     # ── ISO 8601 (most common from Polymarket API) ──────────────────────────
     try:
         return datetime.fromisoformat(s.replace("Z", "+00:00"))
-    except (ValueError, AttributeError):
+    except (ValueError, AttributeError, TypeError):  # TypeError on Python 3.11 for non-ISO strings
         pass
 
     # ── Polymarket live API format with time component ───────────────────────
