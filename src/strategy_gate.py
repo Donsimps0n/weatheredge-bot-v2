@@ -112,6 +112,7 @@ F_STRICT_PRICE_MIN = 0.10
 F_STRICT_PRICE_MAX = 0.20
 F_STRICT_RECAL_PROB_MIN = 0.22
 F_STRICT_RECAL_PROB_MAX = 0.40
+RECOVERY_EXACT_MIN_RECAL_PROB = 0.20   # recovery_exact only — 2pp lower than F-Strict floor
 F_STRICT_LEAD_MIN_MIN = 12 * 60   # 12h
 F_STRICT_LEAD_MAX_MIN = 24 * 60   # 24h
 F_STRICT_MAX_RMSE_C = 1.8
@@ -128,6 +129,7 @@ def f_strict_pass(
     city: str,
     bin_type: str = "exact_1bin",
     allow_unknown_rmse: bool = False,     # recovery_exact only: pass True to allow missing RMSE
+    recal_prob_min: float = F_STRICT_RECAL_PROB_MIN,  # recovery_exact may pass RECOVERY_EXACT_MIN_RECAL_PROB
 ) -> tuple[bool, str, float]:
     """
     Returns (ok, reason, recalibrated_prob).
@@ -163,8 +165,8 @@ def f_strict_pass(
     elif rmse > F_STRICT_MAX_RMSE_C:
         return False, f"station {city} rmse={rmse:.2f} > {F_STRICT_MAX_RMSE_C}°C", 0.0
     rp = recal_prob(raw_prob)
-    if not (F_STRICT_RECAL_PROB_MIN <= rp <= F_STRICT_RECAL_PROB_MAX):
-        return False, f"recal_prob {rp:.3f} outside [{F_STRICT_RECAL_PROB_MIN},{F_STRICT_RECAL_PROB_MAX}]", rp
+    if not (recal_prob_min <= rp <= F_STRICT_RECAL_PROB_MAX):
+        return False, f"recal_prob {rp:.3f} outside [{recal_prob_min},{F_STRICT_RECAL_PROB_MAX}]", rp
     return True, "F-STRICT PASS", rp
 
 
