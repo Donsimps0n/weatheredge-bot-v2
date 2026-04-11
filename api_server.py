@@ -1408,14 +1408,19 @@ def _build_signals(weather_markets, weather_cities):
     _others = sorted(by_city.keys() - _recovery_cities_lower)
     cities = _recovery_first + _others
     # Pre-commit up to 3 exact bins per whitelist city before round-robin opens.
-    # Boundary bins (idx 0-1 after sort) are handled by round-robin round 0-1;
-    # exact bins (idx 2+) would otherwise never reach the 60-signal cap.
+    # Select the 3 bins closest to the forecast center (temp_max from city_wx)
+    # rather than the first 3 in threshold order (which are cold-tail bins).
+    # Falls back to 20°C if no weather data — still better than threshold order.
     _EXACT_PER_CITY = 3
     for _wc in _recovery_first:
         _exact_bins = [t for t in by_city[_wc] if t[1]["direction"] == "exact"]
-        for _t in _exact_bins[:_EXACT_PER_CITY]:
-            if len(diverse) < 60 and _t not in diverse:
-                diverse.append(_t)
+        if _exact_bins:
+            _wx = city_wx.get(_wc)
+            _fc = (_wx.get("temp_max") or _wx.get("temp", 20.0)) if _wx else 20.0
+            _exact_bins.sort(key=lambda t: abs(t[1]["threshold_c"] - _fc))
+            for _t in _exact_bins[:_EXACT_PER_CITY]:
+                if len(diverse) < 60 and _t not in diverse:
+                    diverse.append(_t)
     while len(diverse) < min(60, sum(len(v) for v in by_city.values())):
         added = False
         for c in cities:
@@ -1746,8 +1751,8 @@ def _build_signals(weather_markets, weather_cities):
                     else:
                         _gate_reason = _why
                         logger.warning(
-                            "RECOVERY_REJECT city=%s dir=exact mp=%.2f recal=%.3f mins=%s why=%s",
-                            p["city"], mp, recal_prob(_raw_prob), _mins_left, _why,
+                            "RECOVERY_REJECT city=%s dir=exact thr=%.1fC mp=%.2f recal=%.3f mins=%s why=%s",
+                            p["city"], p["threshold_c"], mp, recal_prob(_raw_prob), _mins_left, _why,
                         )
                 else:
                     # RECOVERY_MODE=True but direction/city not routed — always skip
