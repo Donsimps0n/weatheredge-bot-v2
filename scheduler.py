@@ -326,7 +326,14 @@ class TradingScheduler:
                         market_slug, _ds_err,
                     )
                     diurnal_stage = "unknown"
-                regime = classify_regime(market.get("regime_data", {}))
+                try:
+                    regime = classify_regime(market.get("regime_data", {}))
+                except Exception as _cr_err:
+                    logger.warning(
+                        "%s: classify_regime failed (%s), defaulting to 'unknown'",
+                        market_slug, _cr_err,
+                    )
+                    regime = "unknown"
 
                 logger.debug(
                     f"{market_slug}: TTR={time_to_resolution_hours:.1f}h, "
