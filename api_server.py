@@ -1392,9 +1392,19 @@ def _build_signals(weather_markets, weather_cities):
         if not p["city"] or p["threshold_c"] is None:
             continue
         by_city.setdefault(p["city"].lower(), []).append((mkt, p))
+    # Boundary-first sort: within each city put above/below bins before exact bins
+    # so the round-robin reaches both boundary bins for every city before exact bins
+    # consume the 60-signal cap.
+    _recovery_cities_lower = {c.lower() for c in RECOVERY_CITIES} if RECOVERY_CITIES else set()
+    for _c in by_city:
+        by_city[_c].sort(key=lambda t: 0 if t[1]["direction"] in ("above", "below") else 1)
+    # RECOVERY_CITIES first in iteration so both their boundary bins land in the pool
+    # before the cap is reached; all other cities follow in alphabetical order.
     diverse = []
     idx = 0
-    cities = sorted(by_city.keys())
+    _recovery_first = sorted(_recovery_cities_lower & by_city.keys())
+    _others = sorted(by_city.keys() - _recovery_cities_lower)
+    cities = _recovery_first + _others
     while len(diverse) < min(60, sum(len(v) for v in by_city.values())):
         added = False
         for c in cities:
