@@ -2650,9 +2650,12 @@ def _run_auto_trade_cycle():
             _is_proof_city = (cfg["paper_mode"] and not _meta_proof_consumed
                               and _meta_proof_city_lower_ev
                               and _s.get("city", "").lower() == _meta_proof_city_lower_ev)
-            _ev_bump = 0.0 if _is_proof_city else _MIN_EV_BUMP.get(_dq, 0)
+            _is_recovery_lane = _s.get("lane") == "recovery_above_below"
+            _ev_bump = 0.0 if (_is_proof_city or _is_recovery_lane) else _MIN_EV_BUMP.get(_dq, 0)
             # Knob C: station reliability EV addon (from bias agent)
-            _ev_bump += _s.get("ev_addon", 0)
+            # Skip bias addon for recovery lane — recovery gate already checked edge
+            if not _is_recovery_lane:
+                _ev_bump += _s.get("ev_addon", 0)
             _s["_min_ev_adj"] = max(cfg["min_ev"], cfg["min_ev"] + _ev_bump)
             _s["_kelly_mult"] = 1.0 if _is_proof_city else _KELLY_MULT.get(_dq, 1.0)
             if _dq == "partial" and not _is_proof_city:

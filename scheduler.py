@@ -366,7 +366,7 @@ class TradingScheduler:
                 # Step 7: Compute min_theo_ev with dynamic ratchet
                 min_theo_ev = self._compute_min_theo_ev(
                     burst_mode=False,  # Can be overridden in schedule_loop
-                    base_min_ev=self.config.min_theo_ev,
+                    base_min_ev=getattr(self.config, 'min_theo_ev', 0.02),
                 )
 
                 # Step 8: Build ladder and compute theoretical EV
