@@ -164,6 +164,10 @@ def parse_end_date_safe(s: str):
     if not s:
         return None
 
+    # ── Already a datetime object ───────────────────────────────────────────
+    if isinstance(s, datetime):
+        return s if s.tzinfo is not None else s.replace(tzinfo=timezone.utc)
+
     # ── ISO 8601 (most common from Polymarket API) ──────────────────────────
     try:
         return datetime.fromisoformat(s.replace("Z", "+00:00"))
