@@ -82,6 +82,7 @@ try:
         RECOVERY_AB_MIN_MARKET_PRICE, RECOVERY_AB_MAX_MARKET_PRICE,
         RECOVERY_AB_MIN_RECAL_PROB, RECOVERY_AB_MIN_EDGE_PP,
         RECOVERY_AB_DAILY_STOP_USD,
+        RECOVERY_EXACT,
     )
 except ImportError:
     RECOVERY_MODE = False
@@ -107,6 +108,7 @@ except ImportError:
     RECOVERY_AB_MIN_RECAL_PROB = 0.25
     RECOVERY_AB_MIN_EDGE_PP = 0.05
     RECOVERY_AB_DAILY_STOP_USD = -10.0
+    RECOVERY_EXACT = False
 
 # ── Recovery gate module ───────────────────────────────────────────────────
 try:
