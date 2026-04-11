@@ -316,7 +316,16 @@ class TradingScheduler:
                 time_to_resolution_hours = time_to_resolution.total_seconds() / 3600
 
                 local_tz = market.get("timezone", "UTC")
-                diurnal_stage = get_diurnal_stage(now_utc, local_tz)
+                try:
+                    from zoneinfo import ZoneInfo as _ZI
+                    _now_local = now_utc.astimezone(_ZI(local_tz))
+                    diurnal_stage = get_diurnal_stage(_now_local, peak_start=14, peak_end=17)
+                except Exception as _ds_err:
+                    logger.warning(
+                        "%s: diurnal_stage failed (%s), defaulting to 'unknown'",
+                        market_slug, _ds_err,
+                    )
+                    diurnal_stage = "unknown"
                 regime = classify_regime(market.get("regime_data", {}))
 
                 logger.debug(
