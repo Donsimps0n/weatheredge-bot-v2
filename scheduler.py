@@ -370,11 +370,18 @@ class TradingScheduler:
                 )
 
                 # Step 8: Build ladder and compute theoretical EV
-                ladder = build_ladder(
-                    probs=filtered_probs,
-                    category=category,
-                    prices=prices,
-                )
+                try:
+                    ladder = build_ladder(
+                        probs=filtered_probs,
+                        category=category,
+                        prices=prices,
+                    )
+                except Exception as _bl_err:
+                    logger.warning(
+                        "%s: build_ladder failed (%s), defaulting to []",
+                        market_slug, _bl_err,
+                    )
+                    ladder = []
 
                 theoretical_full_ev = self._compute_theoretical_ev(
                     ladder=ladder,
