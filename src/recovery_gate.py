@@ -152,6 +152,7 @@ def parse_end_date_safe(s: str):
 
     Handles:
       - ISO 8601:          "2026-04-09T15:00:00Z"  or  "2026-04-09T15:00:00+00:00"
+      - Polymarket live:   "Sun, 12 Apr 2026 00:00:00 GMT"  (actual API format)
       - RFC-ish display:   "Thu, 09 Apr 2026"
       - Short display:     "09 Apr 2026"  /  "Apr 9, 2026"
       - Date only:         "2026-04-09"
@@ -169,7 +170,21 @@ def parse_end_date_safe(s: str):
     except (ValueError, AttributeError):
         pass
 
-    # ── Display formats (seen in Polymarket UI and older API responses) ──────
+    # ── Polymarket live API format with time component ───────────────────────
+    # Actual observed format: "Sun, 12 Apr 2026 00:00:00 GMT"
+    # Try with and without the %Z suffix; always attach UTC.
+    for fmt in (
+        "%a, %d %b %Y %H:%M:%S %Z",  # "Sun, 12 Apr 2026 00:00:00 GMT"
+        "%a, %d %b %Y %H:%M:%S",     # "Sun, 12 Apr 2026 00:00:00" (no TZ)
+    ):
+        try:
+            d = datetime.strptime(s.strip(), fmt)
+            # Parsed time is present — treat as UTC, do NOT substitute end-of-day.
+            return d.replace(tzinfo=timezone.utc)
+        except ValueError:
+            continue
+
+    # ── Display-only formats (no time component — assume end of day UTC) ──────
     for fmt in (
         "%a, %d %b %Y",   # "Thu, 09 Apr 2026"
         "%d %b %Y",        # "09 Apr 2026"

@@ -1587,6 +1587,26 @@ def _build_signals(weather_markets, weather_cities):
         # STRATEGY_REWRITE §2.1. Apply the recalibration map and the F-Strict
         # filter; if the signal does not pass, demote to SKIP and tag the
         # reason. Pilot-city restriction is enforced here too.
+        #
+        # Imports are separated from execution so import failures surface
+        # with their actual exception text (not swallowed as "gate error").
+
+        # ── Gate default state (always defined before any try block) ─────
+        our_prob_recal = our_prob
+        ev_recal = ev
+        ev_dollar_recal = ev_dollar
+        kelly_recal = kelly
+        _gate_reason = "gate_not_run"
+        _lane = "none"
+        _recovery_log: dict = {}
+        _ensemble_prob_pct = _raw_prob_pre_se_pct
+        _date_parse_ok = False
+        _mins_left = None
+        _raw_prob = our_prob / 100.0
+        _recal = our_prob  # fallback; overwritten on success
+
+        # ── Step 1: imports (isolated so failures are visible) ───────────
+        _gate_imports_ok = False
         try:
             from src.strategy_gate import (
                 f_strict_pass, recal_prob, shadow_lane_ok,
@@ -1594,119 +1614,117 @@ def _build_signals(weather_markets, weather_cities):
             from config import (
                 ENABLE_F_STRICT, PILOT_CITY_ONLY, ABOVE_BELOW_SHADOW,
             )
-            _raw_prob = our_prob / 100.0
-            _recal = round(recal_prob(_raw_prob) * 100.0, 1)
+            _gate_imports_ok = True
+        except Exception as _imp_err:
+            logger.warning(
+                "GATE_IMPORT_ERROR city=%s exc=%s: %s",
+                p.get("city"), type(_imp_err).__name__, _imp_err,
+            )
+            _gate_reason = f"gate_import_error: {type(_imp_err).__name__}: {_imp_err}"
+            sig_type = "SKIP"
 
-            # ── Date parsing: handles ISO 8601 AND display formats ──────────
-            _mins_left = None
-            _date_parse_ok = False
-            _raw_end_str = mkt.get("end_date", "") or ""
-            if _RECOVERY_GATE_OK:
-                _end_dt = parse_end_date_safe(_raw_end_str)
-            else:
-                _end_dt = None
-                try:
-                    _end_dt = datetime.fromisoformat(_raw_end_str.replace("Z", "+00:00"))
-                except Exception:
-                    pass
-            if _end_dt is not None:
-                _mins_left = (_end_dt - datetime.now(timezone.utc)).total_seconds() / 60.0
-                _date_parse_ok = True
-            else:
-                logger.warning("end_date parse failed: %r — gate will block", _raw_end_str)
+        # ── Step 2: gate execution ────────────────────────────────────────
+        if _gate_imports_ok:
+            try:
+                _raw_prob = our_prob / 100.0
+                _recal = round(recal_prob(_raw_prob) * 100.0, 1)
 
-            # Ensemble baseline: must be the pre-station-edge value captured above.
-            # our_prob at this point equals _raw_prob_pre_se_pct in recovery mode
-            # (station-edge was suppressed). In non-recovery mode our_prob may have
-            # been overwritten by station-edge; _raw_prob_pre_se_pct still holds the
-            # unmodified ensemble value for the audit trail.
-            _ensemble_prob_pct = _raw_prob_pre_se_pct  # true pre-SE ensemble baseline
-
-            _gate_reason = ""
-            _gate_ok = False
-            _lane = "none"
-            _recovery_log: dict = {}
-
-            # ── RECOVERY MODE: above/below gate (primary lane) ─────────────
-            if (RECOVERY_MODE and _RECOVERY_GATE_OK
-                    and p["direction"] in ("above", "below")):
-                # City whitelist enforced inside recovery_ab_pass
-                _bias_c_for_log = _bias_agent.get_correction_c(p["city"]) if HAS_BIAS_AGENT else 0.0
-                _ok, _why, _recovery_log = recovery_ab_pass(
-                    city=p["city"],
-                    direction=p["direction"],
-                    market_price=mp / 100.0,
-                    recal_prob=recal_prob(_raw_prob),
-                    mins_to_resolution=_mins_left,
-                    raw_prob=_raw_prob,
-                    ensemble_prob=_ensemble_prob_pct / 100.0,
-                    bias_correction_c=_bias_c_for_log,
-                    sigma_c=float(p.get("sigma", 2.5) or 2.5),
-                )
-                _recovery_log["date_parse_ok"] = _date_parse_ok
-                _recovery_log["end_date_raw"] = _raw_end_str
-                if _ok:
-                    _gate_ok = True
-                    _lane = "recovery_above_below"
+                # ── Date parsing: handles ISO 8601 AND display formats ──────
+                _raw_end_str = mkt.get("end_date", "") or ""
+                if _RECOVERY_GATE_OK:
+                    _end_dt = parse_end_date_safe(_raw_end_str)
                 else:
-                    _gate_reason = _why
-            elif not RECOVERY_MODE:
-                # ── Legacy gates (only active when RECOVERY_MODE=False) ─────
-                if p["direction"] == "exact" and ENABLE_F_STRICT and _mins_left is not None:
-                    _ok, _why, _rp = f_strict_pass(
-                        price=mp / 100.0,
-                        raw_prob=_raw_prob,
-                        mins_to_resolution=_mins_left,
-                        city=p["city"],
-                        bin_type="exact",
-                    )
-                    if _ok:
-                        _gate_ok = True
-                        _lane = "f_strict"
-                    _gate_reason = _why
-                elif p["direction"] in ("above", "below") and ABOVE_BELOW_SHADOW and _mins_left is not None:
-                    _ok, _why = shadow_lane_ok(
-                        raw_prob=_raw_prob,
-                        price=mp / 100.0,
-                        mins_to_resolution=_mins_left,
-                    )
-                    if _ok:
-                        _gate_ok = True
-                        _lane = "shadow_above_below"
-                    _gate_reason = _why
-                # Legacy pilot-city restriction
-                if PILOT_CITY_ONLY and p["city"] != PILOT_CITY_ONLY:
-                    _gate_ok = False
-                    _gate_reason = f"pilot-city only ({PILOT_CITY_ONLY})"
-                    _lane = "none"
-            else:
-                # RECOVERY_MODE=True but direction is exact/unknown — always skip
-                _gate_reason = f"recovery_mode: direction '{p['direction']}' not above/below"
-                _gate_ok = False
+                    _end_dt = None
+                    try:
+                        _end_dt = datetime.fromisoformat(_raw_end_str.replace("Z", "+00:00"))
+                    except Exception:
+                        pass
+                if _end_dt is not None:
+                    _mins_left = (_end_dt - datetime.now(timezone.utc)).total_seconds() / 60.0
+                    _date_parse_ok = True
+                else:
+                    logger.warning("end_date parse failed: %r — gate will block", _raw_end_str)
 
-            if not _gate_ok:
+                # Ensemble baseline: pre-station-edge value for audit trail.
+                _ensemble_prob_pct = _raw_prob_pre_se_pct  # true pre-SE ensemble baseline
+
+                _gate_reason = ""
+                _gate_ok = False
+                _lane = "none"
+                _recovery_log = {}
+
+                # ── RECOVERY MODE: above/below gate (primary lane) ──────────
+                if (RECOVERY_MODE and _RECOVERY_GATE_OK
+                        and p["direction"] in ("above", "below")):
+                    _bias_c_for_log = _bias_agent.get_correction_c(p["city"]) if HAS_BIAS_AGENT else 0.0
+                    _ok, _why, _recovery_log = recovery_ab_pass(
+                        city=p["city"],
+                        direction=p["direction"],
+                        market_price=mp / 100.0,
+                        recal_prob=recal_prob(_raw_prob),
+                        mins_to_resolution=_mins_left,
+                        raw_prob=_raw_prob,
+                        ensemble_prob=_ensemble_prob_pct / 100.0,
+                        bias_correction_c=_bias_c_for_log,
+                        sigma_c=float(p.get("sigma", 2.5) or 2.5),
+                    )
+                    _recovery_log["date_parse_ok"] = _date_parse_ok
+                    _recovery_log["end_date_raw"] = _raw_end_str
+                    if _ok:
+                        _gate_ok = True
+                        _lane = "recovery_above_below"
+                    else:
+                        _gate_reason = _why
+                elif not RECOVERY_MODE:
+                    # ── Legacy gates (only active when RECOVERY_MODE=False) ──
+                    if p["direction"] == "exact" and ENABLE_F_STRICT and _mins_left is not None:
+                        _ok, _why, _rp = f_strict_pass(
+                            price=mp / 100.0,
+                            raw_prob=_raw_prob,
+                            mins_to_resolution=_mins_left,
+                            city=p["city"],
+                            bin_type="exact",
+                        )
+                        if _ok:
+                            _gate_ok = True
+                            _lane = "f_strict"
+                        _gate_reason = _why
+                    elif p["direction"] in ("above", "below") and ABOVE_BELOW_SHADOW and _mins_left is not None:
+                        _ok, _why = shadow_lane_ok(
+                            raw_prob=_raw_prob,
+                            price=mp / 100.0,
+                            mins_to_resolution=_mins_left,
+                        )
+                        if _ok:
+                            _gate_ok = True
+                            _lane = "shadow_above_below"
+                        _gate_reason = _why
+                    if PILOT_CITY_ONLY and p["city"] != PILOT_CITY_ONLY:
+                        _gate_ok = False
+                        _gate_reason = f"pilot-city only ({PILOT_CITY_ONLY})"
+                        _lane = "none"
+                else:
+                    # RECOVERY_MODE=True but direction is exact/unknown — always skip
+                    _gate_reason = f"recovery_mode: direction '{p['direction']}' not above/below"
+                    _gate_ok = False
+
+                if not _gate_ok:
+                    sig_type = "SKIP"
+                # Recompute EV/Kelly against the recalibrated prob (display + sizing)
+                our_prob_recal = _recal
+                ev_recal = round(our_prob_recal - mp, 1)
+                _pr = our_prob_recal / 100.0
+                _Pm = max(0.01, mp / 100.0)
+                ev_dollar_recal = round((_pr - _Pm) / _Pm * 100.0, 1)
+                kelly_recal = round(max(0.0, (_pr * (1.0 / _Pm) - 1.0) / ((1.0 / _Pm) - 1.0) * 100.0), 1) if mp > 0 else 0
+            except Exception as _gate_err:
+                logger.warning(
+                    "GATE_EXEC_ERROR city=%s exc=%s: %s",
+                    p.get("city"), type(_gate_err).__name__, _gate_err,
+                )
+                _gate_reason = f"gate_exec_error: {type(_gate_err).__name__}: {_gate_err}"
                 sig_type = "SKIP"
-            # Recompute EV/Kelly against the recalibrated prob (display + sizing)
-            our_prob_recal = _recal
-            ev_recal = round(our_prob_recal - mp, 1)
-            _pr = our_prob_recal / 100.0
-            _Pm = max(0.01, mp / 100.0)
-            ev_dollar_recal = round((_pr - _Pm) / _Pm * 100.0, 1)
-            kelly_recal = round(max(0.0, (_pr * (1.0 / _Pm) - 1.0) / ((1.0 / _Pm) - 1.0) * 100.0), 1) if mp > 0 else 0
-        except Exception as _gate_err:
-            logger.debug("F-strict gate error %s: %s", p.get("city"), _gate_err)
-            our_prob_recal = our_prob
-            ev_recal = ev
-            ev_dollar_recal = ev_dollar
-            kelly_recal = kelly
-            _gate_reason = "gate error"
-            _lane = "none"
-            # Ensure variables referenced in signals.append() are always defined
-            # even when the try block throws before reaching their assignments.
-            _recovery_log = {}
-            _ensemble_prob_pct = _raw_prob_pre_se_pct  # defined before try block
-            _date_parse_ok = False
-            _mins_left = None
+                # our_prob_recal and other fields retain their default-state values
 
         # ── Recovery mode: fixed sizing override ─────────────────────────────
         if RECOVERY_MODE and DISABLE_KELLY and sig_type != "SKIP":
