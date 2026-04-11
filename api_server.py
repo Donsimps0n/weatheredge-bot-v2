@@ -1539,6 +1539,10 @@ def _build_signals(weather_markets, weather_cities):
         agreement = "STRONG" if abs(ev) > 20 else "MODERATE" if abs(ev) > 10 else "WEAK"
         sig_type = "SKIP" if abs(ev) < 5 else ("BUY YES" if ev > 0 else "BUY NO")
         # ── Station edge overlay: refine with obs + physics ──
+        # Capture pre-station-edge probability NOW, before any mutation.
+        # This is the true ensemble/base value and must not be clobbered.
+        _raw_prob_pre_se_pct: float = our_prob          # ensemble baseline
+        _station_edge_prob_pct: float | None = None     # populated if SE runs
         _se_data = {}
         if _STATION_EDGE_AVAILABLE:
             try:
@@ -1549,15 +1553,7 @@ def _build_signals(weather_markets, weather_cities):
                         threshold_c=p["threshold_c"], direction=p["direction"],
                         is_tomorrow=_is_tomorrow, bias_correction_c=_bias_c,
                     )
-                    # Override probability with station-matched estimate
-                    our_prob = round(_se.probability * 100, 1)
-                    our_prob = max(0.1, min(99.9, our_prob))
-                    ev = round(our_prob - mp, 1)
-                    _p = our_prob / 100.0
-                    ev_dollar = round((_p - _P) / _P * 100, 1)
-                    kelly = round(_se.recommended_size * 100, 1)
-                    conf = round(_se.confidence * 5, 0)  # scale 0-1 to 0-5
-                    sig_type = "SKIP" if abs(ev) < 8 else ("BUY YES" if ev > 0 else "BUY NO")
+                    _station_edge_prob_pct = round(_se.probability * 100, 1)
                     _se_data = {
                         "station_source": _se.source,
                         "station_confidence": round(_se.confidence, 3),
@@ -1566,6 +1562,25 @@ def _build_signals(weather_markets, weather_cities):
                         "blend_weight_obs": round(_se.blend_weight_obs, 2),
                         "recommended_kelly": round(_se.recommended_size, 4),
                     }
+                    if RECOVERY_MODE and RECOVERY_DISABLE_STATION_EDGE_OVERRIDE:
+                        # Recovery mode: station-edge is logged for diagnostics only.
+                        # our_prob is NOT mutated. All downstream EV/gate/sizing
+                        # continue to use the unmodified ensemble probability.
+                        logger.debug(
+                            "RECOVERY_SE_BLOCKED city=%-12s se_prob=%.1f%% "
+                            "ensemble_prob=%.1f%% — override suppressed",
+                            p["city"], _station_edge_prob_pct, our_prob,
+                        )
+                    else:
+                        # Non-recovery mode: station-edge overrides our_prob as before.
+                        our_prob = round(_se.probability * 100, 1)
+                        our_prob = max(0.1, min(99.9, our_prob))
+                        ev = round(our_prob - mp, 1)
+                        _p = our_prob / 100.0
+                        ev_dollar = round((_p - _P) / _P * 100, 1)
+                        kelly = round(_se.recommended_size * 100, 1)
+                        conf = round(_se.confidence * 5, 0)  # scale 0-1 to 0-5
+                        sig_type = "SKIP" if abs(ev) < 8 else ("BUY YES" if ev > 0 else "BUY NO")
             except Exception as _se_err:
                 logger.debug("Station edge failed for %s: %s", p["city"], _se_err)
         # ── F-STRICT GATE + RECAL ─────────────────────────────────────
@@ -1600,8 +1615,12 @@ def _build_signals(weather_markets, weather_cities):
             else:
                 logger.warning("end_date parse failed: %r — gate will block", _raw_end_str)
 
-            # Store ensemble prob before any override (for logging)
-            _ensemble_prob_pct = our_prob  # captured before station_edge step
+            # Ensemble baseline: must be the pre-station-edge value captured above.
+            # our_prob at this point equals _raw_prob_pre_se_pct in recovery mode
+            # (station-edge was suppressed). In non-recovery mode our_prob may have
+            # been overwritten by station-edge; _raw_prob_pre_se_pct still holds the
+            # unmodified ensemble value for the audit trail.
+            _ensemble_prob_pct = _raw_prob_pre_se_pct  # true pre-SE ensemble baseline
 
             _gate_reason = ""
             _gate_ok = False
@@ -1715,7 +1734,20 @@ def _build_signals(weather_markets, weather_cities):
             "condition_id": mkt.get("condition_id", ""),
             "tokens": mkt.get("tokens", []),
             # ── Recovery audit trail ─────────────────────────────────────────
+            # Probability chain (all values in percent, 0–100):
+            #   raw_prob_pre_station_edge_pct  — ensemble output, no SE, no recal
+            #   station_edge_prob_pct          — SE estimate (None if SE unavailable
+            #                                    or suppressed but SE did not run)
+            #   raw_prob_post_station_edge_pct — our_prob after SE step:
+            #                                    == pre_se in recovery (SE blocked)
+            #                                    == se_prob in non-recovery (SE ran)
+            #   ensemble_prob_pct              — alias for raw_prob_pre_station_edge_pct
+            #   recal_prob_pct                 — after recalibration map
+            #   final_prob_used_pct            — what EV and gate actually used
             "_recovery_log": _recovery_log,
+            "_raw_prob_pre_se_pct": _raw_prob_pre_se_pct,
+            "_station_edge_prob_pct": _station_edge_prob_pct,
+            "_raw_prob_post_se_pct": our_prob,     # == pre_se in recovery, se_prob otherwise
             "_ensemble_prob_pct": _ensemble_prob_pct,
             "_date_parse_ok": _date_parse_ok,
             "_mins_left": _mins_left,
@@ -2960,12 +2992,43 @@ def _run_auto_trade_cycle():
                 "recovery_mode": RECOVERY_MODE,
                 "recovery_lane": sig.get("lane", "none"),
                 **(sig.get("_recovery_log") or {}),
-                # Explicit probability audit trail for post-mortem
-                "raw_prob_pct": sig.get("our_prob", 0),           # uncalibrated, post-station-edge
-                "ensemble_prob_pct": sig.get("_ensemble_prob_pct", sig.get("our_prob", 0)),
-                "recal_prob_pct": sig.get("our_prob_recal", 0),   # after recal map
-                "final_prob_used_pct": sig.get("our_prob_recal", 0),  # what EV was computed from
-                "clob_edge_at_fill_warning": "computed from raw_prob not recal — do not use as edge signal",
+                # ── Probability chain audit trail ──────────────────────────────
+                # All values in percent (0–100). Chain is sequential; each field
+                # is independently captured so no step can silently overwrite another.
+                #
+                # raw_prob_pre_station_edge_pct
+                #   Ensemble/base probability BEFORE station-edge runs.
+                #   In recovery mode this equals final_prob_used_pct (SE blocked).
+                "raw_prob_pre_station_edge_pct": sig.get("_raw_prob_pre_se_pct", sig.get("our_prob", 0)),
+                #
+                # station_edge_prob_pct
+                #   Station-edge estimate if SE ran (None/null if unavailable or
+                #   SE module not loaded). In recovery mode SE is called for
+                #   diagnostics but this value does NOT enter the trade path.
+                "station_edge_prob_pct": sig.get("_station_edge_prob_pct"),
+                #
+                # raw_prob_post_station_edge_pct
+                #   our_prob after the SE step. Equals raw_prob_pre_station_edge_pct
+                #   in recovery mode (SE override suppressed). Equals
+                #   station_edge_prob_pct in non-recovery mode (SE ran and overrode).
+                "raw_prob_post_station_edge_pct": sig.get("_raw_prob_post_se_pct", sig.get("our_prob", 0)),
+                #
+                # ensemble_prob_pct
+                #   Alias for raw_prob_pre_station_edge_pct. Kept for continuity
+                #   with previous schema.
+                "ensemble_prob_pct": sig.get("_ensemble_prob_pct", sig.get("_raw_prob_pre_se_pct", sig.get("our_prob", 0))),
+                #
+                # recal_prob_pct
+                #   After applying the recalibration map to raw_prob_post_station_edge_pct.
+                "recal_prob_pct": sig.get("our_prob_recal", 0),
+                #
+                # final_prob_used_pct
+                #   The value actually used for EV computation and gate decisions.
+                #   In recovery mode: recal_prob_pct (derived from pre-SE ensemble).
+                #   In non-recovery mode: recal_prob_pct (derived from post-SE prob).
+                "final_prob_used_pct": sig.get("our_prob_recal", 0),
+                #
+                "clob_edge_at_fill_warning": "computed from raw_prob_post_se not recal — do not use as edge signal",
                 "mins_to_resolution": sig.get("_mins_left"),
                 "date_parse_ok": sig.get("_date_parse_ok", False),
             }
