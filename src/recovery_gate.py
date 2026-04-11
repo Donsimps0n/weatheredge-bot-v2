@@ -181,8 +181,20 @@ def parse_end_date_safe(s: str):
             d = datetime.strptime(s.strip(), fmt)
             # Parsed time is present — treat as UTC, do NOT substitute end-of-day.
             return d.replace(tzinfo=timezone.utc)
-        except ValueError:
+        except (ValueError, TypeError):
+            # %Z raises TypeError on some Python builds when TZ token is unrecognised
             continue
+
+    # ── Fallback: strip trailing TZ token and retry with no-%Z format ───────────
+    # Handles platforms where %Z raises TypeError for "GMT" / "UTC" / "EST" etc.
+    import re as _re
+    _s_no_tz = _re.sub(r'\s+[A-Z]{2,5}$', '', s.strip())
+    if _s_no_tz != s.strip():
+        try:
+            d = datetime.strptime(_s_no_tz, "%a, %d %b %Y %H:%M:%S")
+            return d.replace(tzinfo=timezone.utc)
+        except (ValueError, TypeError):
+            pass
 
     # ── Display-only formats (no time component — assume end of day UTC) ──────
     for fmt in (
