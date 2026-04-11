@@ -1637,6 +1637,7 @@ def _build_signals(weather_markets, weather_cities):
             from src.strategy_gate import (
                 f_strict_pass, recal_prob, shadow_lane_ok,
                 RECOVERY_EXACT_MIN_RECAL_PROB,
+                RECOVERY_EXACT_MAX_PRICE,
             )
             from config import (
                 ENABLE_F_STRICT, PILOT_CITY_ONLY, ABOVE_BELOW_SHADOW,
@@ -1747,6 +1748,7 @@ def _build_signals(weather_markets, weather_cities):
                         bin_type="exact",
                         allow_unknown_rmse=True,        # recovery_exact: missing RMSE is "unknown but allowed"
                         recal_prob_min=RECOVERY_EXACT_MIN_RECAL_PROB,  # 0.20 vs F-Strict 0.22
+                        price_max=RECOVERY_EXACT_MAX_PRICE,            # 0.25 vs F-Strict 0.20
                     )
                     if _ok:
                         _gate_ok = True

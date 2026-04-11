@@ -110,6 +110,7 @@ def station_rmse_ok(city: str, max_rmse_c: float = 1.8) -> bool:
 # ── F-Strict gate ────────────────────────────────────────────────────
 F_STRICT_PRICE_MIN = 0.10
 F_STRICT_PRICE_MAX = 0.20
+RECOVERY_EXACT_MAX_PRICE = 0.25        # recovery_exact only — 5¢ higher ceiling than F-Strict
 F_STRICT_RECAL_PROB_MIN = 0.22
 F_STRICT_RECAL_PROB_MAX = 0.40
 RECOVERY_EXACT_MIN_RECAL_PROB = 0.20   # recovery_exact only — 2pp lower than F-Strict floor
@@ -130,6 +131,7 @@ def f_strict_pass(
     bin_type: str = "exact_1bin",
     allow_unknown_rmse: bool = False,     # recovery_exact only: pass True to allow missing RMSE
     recal_prob_min: float = F_STRICT_RECAL_PROB_MIN,  # recovery_exact may pass RECOVERY_EXACT_MIN_RECAL_PROB
+    price_max: float = F_STRICT_PRICE_MAX,             # recovery_exact may pass RECOVERY_EXACT_MAX_PRICE
 ) -> tuple[bool, str, float]:
     """
     Returns (ok, reason, recalibrated_prob).
@@ -145,8 +147,8 @@ def f_strict_pass(
     """
     if bin_type not in ("exact_1bin", "exact_2bin", "exact"):
         return False, f"bin_type {bin_type} not in F-Strict cohort", 0.0
-    if not (F_STRICT_PRICE_MIN <= price <= F_STRICT_PRICE_MAX):
-        return False, f"price {price:.3f} outside [{F_STRICT_PRICE_MIN},{F_STRICT_PRICE_MAX}]", 0.0
+    if not (F_STRICT_PRICE_MIN <= price <= price_max):
+        return False, f"price {price:.3f} outside [{F_STRICT_PRICE_MIN},{price_max}]", 0.0
     # FIX: explicit None guard — previously would TypeError on comparison then be caught upstream
     if mins_to_resolution is None:
         return False, "mins_to_resolution is None — end_date parse failed, gate blocked", 0.0
