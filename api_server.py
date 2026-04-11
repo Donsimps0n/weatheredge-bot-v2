@@ -1675,11 +1675,12 @@ def _build_signals(weather_markets, weather_cities):
                         _lane = "recovery_above_below"
                     else:
                         _gate_reason = _why
-                        logger.warning(
-                            "RECOVERY_REJECT city=%s dir=%s mp=%.2f recal=%.3f mins=%s why=%s",
-                            p["city"], p["direction"], mp,
-                            recal_prob(_raw_prob), _mins_left, _why,
-                        )
+                        if p["city"] in RECOVERY_CITIES:
+                            logger.warning(
+                                "RECOVERY_REJECT city=%s dir=%s mp=%.2f recal=%.3f mins=%s why=%s",
+                                p["city"], p["direction"], mp,
+                                recal_prob(_raw_prob), _mins_left, _why,
+                            )
                 elif not RECOVERY_MODE:
                     # ── Legacy gates (only active when RECOVERY_MODE=False) ──
                     if p["direction"] == "exact" and ENABLE_F_STRICT and _mins_left is not None:
