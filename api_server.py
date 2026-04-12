@@ -1889,6 +1889,77 @@ def _build_signals(weather_markets, weather_cities):
 
     # Rank by dollar EV (cost-aware edge), not raw probability edge
     signals.sort(key=lambda s: abs(s.get("ev_dollar", 0)), reverse=True)
+
+    # ── Adjacent 2-bin validation — Milan only, log-only, no execution ───────
+    # Collects all Milan exact-bin signals (regardless of single-bin gate result),
+    # forms adjacent pairs (threshold_c and threshold_c + 1.0°C), and logs each
+    # pair's raw combined probability and market cost for analysis.
+    # Raw combined prob = raw_prob_A + raw_prob_B — no recal map applied.
+    # Records are NEVER added to the main signals list; no gate, no sizing, no execution.
+    _2bin_candidates = []
+    _milan_exact = sorted(
+        [_s for _s in signals
+         if _s.get("city", "").lower() == "milan"
+         and _s.get("direction") == "exact"
+         and _s.get("market_price", 0) > 0
+         and _s.get("our_prob", 0) > 0],
+        key=lambda _s: _s.get("threshold_c", 0.0),
+    )
+    for _bi in range(len(_milan_exact) - 1):
+        _sA = _milan_exact[_bi]
+        _sB = _milan_exact[_bi + 1]
+        # Only bins that are exactly 1.0°C apart qualify as an adjacent pair
+        if abs(_sB.get("threshold_c", 0.0) - _sA.get("threshold_c", 0.0) - 1.0) > 0.01:
+            continue
+        _raw_prob_A = round(_sA["our_prob"] / 100.0, 4)
+        _raw_prob_B = round(_sB["our_prob"] / 100.0, 4)
+        _price_A    = round(_sA["market_price"] / 100.0, 4)
+        _price_B    = round(_sB["market_price"] / 100.0, 4)
+        _combined_raw_prob = round(_raw_prob_A + _raw_prob_B, 4)
+        _combined_cost     = round(_price_A + _price_B, 4)
+        _raw_2bin_ev_pp    = round((_combined_raw_prob - _combined_cost) * 100.0, 2)
+        _clears_5pp        = _raw_2bin_ev_pp >= 5.0
+        _thr_A  = _sA.get("threshold_c", 0.0)
+        _thr_B  = _sB.get("threshold_c", 0.0)
+        _pair_mid = round((_thr_A + _thr_B) / 2.0, 1)
+        _fc_c   = _sA.get("ftemp_c")
+        _2bin_candidates.append({
+            "city": "Milan",
+            "forecast_center_c": round(_fc_c, 3) if _fc_c is not None else None,
+            "pair_midpoint_c": _pair_mid,
+            "bin_A_threshold_c": _thr_A,
+            "bin_B_threshold_c": _thr_B,
+            "price_A": _price_A,
+            "price_B": _price_B,
+            "combined_market_cost": _combined_cost,
+            "raw_prob_A": _raw_prob_A,
+            "raw_prob_B": _raw_prob_B,
+            "combined_raw_prob": _combined_raw_prob,
+            "sigma_c": _sA.get("sigma"),
+            "data_quality": _sA.get("data_quality", "unknown"),
+            "mins_to_resolution": round(_sA.get("_mins_left") or 0, 1),
+            "raw_2bin_ev_pp": _raw_2bin_ev_pp,
+            "clears_5pp_screen": _clears_5pp,
+        })
+        logger.info(
+            "RECOVERY_2BIN_CANDIDATE city=Milan fc=%.2fC mid=%.1fC "
+            "bins=[%.1f,%.1f] prices=[%.3f,%.3f] cost=%.3f "
+            "raw_prob=[%.4f,%.4f] combined_raw=%.4f sigma=%.2f "
+            "dq=%s mins=%.0f ev_pp=%.2f clears_5pp=%s",
+            _fc_c if _fc_c is not None else float("nan"),
+            _pair_mid,
+            _thr_A, _thr_B,
+            _price_A, _price_B,
+            _combined_cost,
+            _raw_prob_A, _raw_prob_B,
+            _combined_raw_prob,
+            _sA.get("sigma", float("nan")),
+            _sA.get("data_quality", "unknown"),
+            _sA.get("_mins_left") or 0,
+            _raw_2bin_ev_pp,
+            _clears_5pp,
+        )
+
     return signals
 
 
