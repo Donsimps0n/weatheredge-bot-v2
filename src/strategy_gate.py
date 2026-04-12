@@ -110,7 +110,7 @@ def station_rmse_ok(city: str, max_rmse_c: float = 1.8) -> bool:
 # ── F-Strict gate ────────────────────────────────────────────────────
 F_STRICT_PRICE_MIN = 0.10
 F_STRICT_PRICE_MAX = 0.20
-RECOVERY_EXACT_MAX_PRICE = 0.25        # recovery_exact only — 5¢ higher ceiling than F-Strict
+RECOVERY_EXACT_MAX_PRICE = 0.30        # recovery_exact only — 10¢ higher ceiling than F-Strict
 F_STRICT_RECAL_PROB_MIN = 0.22
 F_STRICT_RECAL_PROB_MAX = 0.40
 RECOVERY_EXACT_MIN_RECAL_PROB = 0.20   # recovery_exact only — 2pp lower than F-Strict floor
