@@ -1929,6 +1929,8 @@ def _build_signals(weather_markets, weather_cities):
             "pair_midpoint_c": _pair_mid,
             "bin_A_threshold_c": _thr_A,
             "bin_B_threshold_c": _thr_B,
+            "bin_A_question": _sA.get("question", ""),
+            "bin_B_question": _sB.get("question", ""),
             "price_A": _price_A,
             "price_B": _price_B,
             "combined_market_cost": _combined_cost,
@@ -1994,6 +1996,68 @@ def _build_signals(weather_markets, weather_cities):
             _bp["data_quality"],
             _bp["mins_to_resolution"],
             _bp["raw_2bin_ev_pp"],
+        )
+        # ── Append composite paper candidate to signals (isolated, no execution) ──
+        # signal="PAPER_2BIN_YES" is not in ("BUY YES","BUY NO") — excluded from
+        # tradeable filter unconditionally. direction="exact_2bin" also excludes it
+        # from the EXACT_2BIN executor's direction=="exact" check.
+        # paper_only=True and lane="recovery_exact_2bin" provide belt-and-suspenders.
+        _bp_combined_prob_pct = round(_bp["combined_raw_prob"] * 100.0, 1)
+        signals.append({
+            "city": "Milan",
+            "pair_id": _pair_id,
+            "question": f"Milan 2bin [{_bp['bin_A_threshold_c']:.0f}\u00b0C\u2013{_bp['bin_B_threshold_c']:.0f}\u00b0C] {_bp_end}",
+            "bin_A_threshold_c": _bp["bin_A_threshold_c"],
+            "bin_B_threshold_c": _bp["bin_B_threshold_c"],
+            "bin_A_question": _bp.get("bin_A_question", ""),
+            "bin_B_question": _bp.get("bin_B_question", ""),
+            "threshold_c": _bp["bin_A_threshold_c"],
+            "direction": "exact_2bin",
+            "lane": "recovery_exact_2bin",
+            "signal": "PAPER_2BIN_YES",
+            "paper_only": True,
+            "paper_candidate_surfaced": True,
+            "price_A": _bp["price_A"],
+            "price_B": _bp["price_B"],
+            "combined_market_cost": _bp["combined_market_cost"],
+            "market_price": round(_bp["combined_market_cost"] * 100.0, 1),
+            "raw_prob_A": _bp["raw_prob_A"],
+            "raw_prob_B": _bp["raw_prob_B"],
+            "combined_raw_prob": _bp["combined_raw_prob"],
+            "our_prob": _bp_combined_prob_pct,
+            "our_prob_recal": _bp_combined_prob_pct,  # no recal applied
+            "forecast_center_c": _bp["forecast_center_c"],
+            "ftemp_c": _bp["forecast_center_c"],
+            "pair_midpoint_c": _bp["pair_midpoint_c"],
+            "sigma_c": _bp["sigma_c"],
+            "sigma": _bp["sigma_c"],
+            "data_quality": _bp["data_quality"],
+            "mins_to_resolution": _bp["mins_to_resolution"],
+            "_mins_left": _bp["mins_to_resolution"],
+            "raw_2bin_ev_pp": _bp["raw_2bin_ev_pp"],
+            "theo_ev": _bp["raw_2bin_ev_pp"],
+            "theo_ev_raw": _bp["raw_2bin_ev_pp"],
+            "ev_dollar": 0.0,
+            "kelly": 0,
+            "kelly_raw": 0,
+            "confidence": 0,
+            "agreement": "PAPER",
+            "gate_reason": "paper_2bin_candidate",
+            "metric": "temp_max",
+            "unit": "C",
+            "end_date": _bp_end,
+            "slug": "",
+            "condition_id": "",
+            "tokens": [],
+            "prob_source": "raw_2bin",
+            "ensemble_members": 0,
+            "ensemble_spread": 0,
+            "models": [],
+        })
+        logger.info(
+            "RECOVERY_2BIN_SURFACED pair_id=%s paper_candidate_surfaced=True "
+            "signal=PAPER_2BIN_YES lane=recovery_exact_2bin tokens=[]",
+            _pair_id,
         )
     else:
         _best_ev = max((c["raw_2bin_ev_pp"] for c in _2bin_candidates), default=0.0)
@@ -3335,6 +3399,8 @@ def _run_auto_trade_cycle():
             # Group exact-direction signals by city + end_date
             _exact_by_group = {}
             for _s2 in sigs:
+                if _s2.get('lane') == 'recovery_exact_2bin':
+                    continue  # paper-candidate composite — never execute
                 if _s2.get('direction') != 'exact':
                     continue
                 if _s2.get('signal') not in ('BUY YES', 'BUY NO'):
