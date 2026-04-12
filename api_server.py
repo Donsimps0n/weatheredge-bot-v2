@@ -1964,44 +1964,53 @@ def _build_signals(weather_markets, weather_cities):
 
     # ── Best Milan pair summary — one line per cycle, isolated from signals ──
     # Selects the highest raw_2bin_ev_pp pair that clears +5pp.
-    # Emits RECOVERY_2BIN_BEST when a qualifying pair exists,
-    # RECOVERY_2BIN_BEST_NONE otherwise. Never touches signals or any trade path.
-    _qualifying = [c for c in _2bin_candidates if c["clears_5pp_screen"]]
-    if _qualifying:
-        _bp = max(_qualifying, key=lambda c: c["raw_2bin_ev_pp"])
-        _bp_end = ""
+    # Split by data quality: only dq=good pairs may be surfaced as candidates.
+    # dq!=good (static_sigma, fallback, etc.) are logged for observation only.
+    _qualifying_good   = [c for c in _2bin_candidates if c["clears_5pp_screen"] and c["data_quality"] == "good"]
+    _qualifying_static = [c for c in _2bin_candidates if c["clears_5pp_screen"] and c["data_quality"] != "good"]
+
+    # Helper: resolve end_date string from matching signal for pair_id construction.
+    def _resolve_bp_end(bp):
         for _s in signals:
             if (_s.get("city", "").lower() == "milan"
                     and _s.get("direction") == "exact"
-                    and _s.get("threshold_c") == _bp["bin_A_threshold_c"]):
+                    and _s.get("threshold_c") == bp["bin_A_threshold_c"]):
                 _ed = _s.get("end_date", "") or ""
-                _bp_end = (_ed.isoformat() if hasattr(_ed, "isoformat") else str(_ed))[:10]
-                break
-        _pair_id = f"milan_2bin_{_bp['bin_A_threshold_c']:.0f}_{_bp['bin_B_threshold_c']:.0f}_{_bp_end}"
+                return (_ed.isoformat() if hasattr(_ed, "isoformat") else str(_ed))[:10]
+        return ""
+
+    # Helper: format the standard best-pair log line.
+    def _log_best(prefix, bp, pair_id):
         logger.info(
-            "RECOVERY_2BIN_BEST pair_id=%s city=Milan "
+            "%s pair_id=%s city=Milan "
             "fc=%.2fC mid=%.1fC bins=[%.1f,%.1f] "
             "prices=[%.3f,%.3f] cost=%.3f "
             "raw_prob=[%.4f,%.4f] combined_raw=%.4f "
             "sigma=%.2f dq=%s mins=%.0f ev_pp=%.2f clears_5pp=True",
-            _pair_id,
-            _bp["forecast_center_c"] if _bp["forecast_center_c"] is not None else float("nan"),
-            _bp["pair_midpoint_c"],
-            _bp["bin_A_threshold_c"], _bp["bin_B_threshold_c"],
-            _bp["price_A"], _bp["price_B"],
-            _bp["combined_market_cost"],
-            _bp["raw_prob_A"], _bp["raw_prob_B"],
-            _bp["combined_raw_prob"],
-            _bp["sigma_c"] if _bp["sigma_c"] is not None else float("nan"),
-            _bp["data_quality"],
-            _bp["mins_to_resolution"],
-            _bp["raw_2bin_ev_pp"],
+            prefix, pair_id,
+            bp["forecast_center_c"] if bp["forecast_center_c"] is not None else float("nan"),
+            bp["pair_midpoint_c"],
+            bp["bin_A_threshold_c"], bp["bin_B_threshold_c"],
+            bp["price_A"], bp["price_B"],
+            bp["combined_market_cost"],
+            bp["raw_prob_A"], bp["raw_prob_B"],
+            bp["combined_raw_prob"],
+            bp["sigma_c"] if bp["sigma_c"] is not None else float("nan"),
+            bp["data_quality"],
+            bp["mins_to_resolution"],
+            bp["raw_2bin_ev_pp"],
         )
-        # ── Append composite paper candidate to signals (isolated, no execution) ──
-        # signal="PAPER_2BIN_YES" is not in ("BUY YES","BUY NO") — excluded from
-        # tradeable filter unconditionally. direction="exact_2bin" also excludes it
-        # from the EXACT_2BIN executor's direction=="exact" check.
-        # paper_only=True and lane="recovery_exact_2bin" provide belt-and-suspenders.
+
+    # ── RECOVERY_2BIN_BEST_GOOD: actionable candidate (surfaced into signals) ──
+    if _qualifying_good:
+        _bp = max(_qualifying_good, key=lambda c: c["raw_2bin_ev_pp"])
+        _bp_end = _resolve_bp_end(_bp)
+        _pair_id = f"milan_2bin_{_bp['bin_A_threshold_c']:.0f}_{_bp['bin_B_threshold_c']:.0f}_{_bp_end}"
+        _log_best("RECOVERY_2BIN_BEST_GOOD", _bp, _pair_id)
+        # Append composite paper candidate to signals (isolated, no execution).
+        # signal="PAPER_2BIN_YES" not in ("BUY YES","BUY NO") — tradeable excluded.
+        # direction="exact_2bin" — EXACT_2BIN executor excluded.
+        # lane="recovery_exact_2bin" — explicit executor skip guard.
         _bp_combined_prob_pct = round(_bp["combined_raw_prob"] * 100.0, 1)
         signals.append({
             "city": "Milan",
@@ -2056,10 +2065,19 @@ def _build_signals(weather_markets, weather_cities):
         })
         logger.info(
             "RECOVERY_2BIN_SURFACED pair_id=%s paper_candidate_surfaced=True "
-            "signal=PAPER_2BIN_YES lane=recovery_exact_2bin tokens=[]",
+            "signal=PAPER_2BIN_YES lane=recovery_exact_2bin dq=good",
             _pair_id,
         )
-    else:
+
+    # ── RECOVERY_2BIN_BEST_STATIC: observation only (never surfaced) ──────────
+    if _qualifying_static:
+        _bp_s = max(_qualifying_static, key=lambda c: c["raw_2bin_ev_pp"])
+        _bp_s_end = _resolve_bp_end(_bp_s)
+        _pair_id_s = f"milan_2bin_{_bp_s['bin_A_threshold_c']:.0f}_{_bp_s['bin_B_threshold_c']:.0f}_{_bp_s_end}"
+        _log_best("RECOVERY_2BIN_BEST_STATIC", _bp_s, _pair_id_s)
+
+    # ── RECOVERY_2BIN_BEST_NONE: no qualifying pair in either tier ────────────
+    if not _qualifying_good and not _qualifying_static:
         _best_ev = max((c["raw_2bin_ev_pp"] for c in _2bin_candidates), default=0.0)
         logger.info(
             "RECOVERY_2BIN_BEST_NONE city=Milan n_pairs=%d best_ev_pp=%.2f",
