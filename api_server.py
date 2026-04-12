@@ -1972,7 +1972,8 @@ def _build_signals(weather_markets, weather_cities):
             if (_s.get("city", "").lower() == "milan"
                     and _s.get("direction") == "exact"
                     and _s.get("threshold_c") == _bp["bin_A_threshold_c"]):
-                _bp_end = (_s.get("end_date", "") or "")[:10]
+                _ed = _s.get("end_date", "") or ""
+                _bp_end = (_ed.isoformat() if hasattr(_ed, "isoformat") else str(_ed))[:10]
                 break
         _pair_id = f"milan_2bin_{_bp['bin_A_threshold_c']:.0f}_{_bp['bin_B_threshold_c']:.0f}_{_bp_end}"
         logger.info(
