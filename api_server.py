@@ -1960,6 +1960,48 @@ def _build_signals(weather_markets, weather_cities):
             _clears_5pp,
         )
 
+    # ── Best Milan pair summary — one line per cycle, isolated from signals ──
+    # Selects the highest raw_2bin_ev_pp pair that clears +5pp.
+    # Emits RECOVERY_2BIN_BEST when a qualifying pair exists,
+    # RECOVERY_2BIN_BEST_NONE otherwise. Never touches signals or any trade path.
+    _qualifying = [c for c in _2bin_candidates if c["clears_5pp_screen"]]
+    if _qualifying:
+        _bp = max(_qualifying, key=lambda c: c["raw_2bin_ev_pp"])
+        _bp_end = ""
+        for _s in signals:
+            if (_s.get("city", "").lower() == "milan"
+                    and _s.get("direction") == "exact"
+                    and _s.get("threshold_c") == _bp["bin_A_threshold_c"]):
+                _bp_end = (_s.get("end_date", "") or "")[:10]
+                break
+        _pair_id = f"milan_2bin_{_bp['bin_A_threshold_c']:.0f}_{_bp['bin_B_threshold_c']:.0f}_{_bp_end}"
+        logger.info(
+            "RECOVERY_2BIN_BEST pair_id=%s city=Milan "
+            "fc=%.2fC mid=%.1fC bins=[%.1f,%.1f] "
+            "prices=[%.3f,%.3f] cost=%.3f "
+            "raw_prob=[%.4f,%.4f] combined_raw=%.4f "
+            "sigma=%.2f dq=%s mins=%.0f ev_pp=%.2f clears_5pp=True",
+            _pair_id,
+            _bp["forecast_center_c"] if _bp["forecast_center_c"] is not None else float("nan"),
+            _bp["pair_midpoint_c"],
+            _bp["bin_A_threshold_c"], _bp["bin_B_threshold_c"],
+            _bp["price_A"], _bp["price_B"],
+            _bp["combined_market_cost"],
+            _bp["raw_prob_A"], _bp["raw_prob_B"],
+            _bp["combined_raw_prob"],
+            _bp["sigma_c"] if _bp["sigma_c"] is not None else float("nan"),
+            _bp["data_quality"],
+            _bp["mins_to_resolution"],
+            _bp["raw_2bin_ev_pp"],
+        )
+    else:
+        _best_ev = max((c["raw_2bin_ev_pp"] for c in _2bin_candidates), default=0.0)
+        logger.info(
+            "RECOVERY_2BIN_BEST_NONE city=Milan n_pairs=%d best_ev_pp=%.2f",
+            len(_2bin_candidates),
+            _best_ev,
+        )
+
     return signals
 
 
