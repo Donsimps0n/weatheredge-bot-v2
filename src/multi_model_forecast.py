@@ -87,7 +87,7 @@ class EnsembleForecast:
 
 _openmeteo_429_count = 0
 _openmeteo_429_backoff_until = 0.0
-_OPENMETEO_429_BACKOFF_S = 120  # Back off for 120s after a 429 — gives cache TTL time to clear
+_OPENMETEO_429_BACKOFF_S = 600  # Back off for 600s after a 429 — gives rate-limit window time to reset
 
 def _fetch_json(url: str, timeout: int = 20) -> dict:
     """Fetch JSON from URL with 429 backoff and error handling."""
@@ -340,11 +340,11 @@ def get_ensemble_forecast(
 
     # ── Cache result ─────────────────────────────────────────────────────
     # Good/partial results get the full 30-min TTL.
-    # Fallback results (e.g. 429 on startup) get a shorter 2-min TTL so
-    # they retry soon without hammering the API every single cycle.
-    _cache[cache_key] = (now if fc.data_quality != "fallback" else now - _CACHE_TTL_S + 120, fc)
+    # Fallback results (e.g. 429 on startup) get a shorter 15-min TTL so
+    # they retry after one scheduler cycle without re-hammering the API every 2 min.
+    _cache[cache_key] = (now if fc.data_quality != "fallback" else now - _CACHE_TTL_S + 900, fc)
     if fc.data_quality == "fallback":
-        log.debug("Caching fallback result for %s day=%d with 2-min TTL — will retry in ~2 min",
+        log.debug("Caching fallback result for %s day=%d with 15-min TTL — will retry in ~15 min",
                   city or f"{lat},{lon}", forecast_day)
     return fc
 
