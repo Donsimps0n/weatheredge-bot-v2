@@ -3059,7 +3059,7 @@ def _run_auto_trade_cycle():
             _city_key = (_city.lower(), _today_str)
             _current_exposure = _city_day_exposure.get(_city_key, 0)
             if _current_exposure >= _MAX_CITY_DAY_EXPOSURE:
-                logger.info("EXPOSURE_CAP: %s | $%.0f already deployed today (cap=$%d)", _city, _current_exposure, _MAX_CITY_DAY_EXPOSURE)
+                logger.debug("EXPOSURE_CAP: %s | $%.0f already deployed today (cap=$%d)", _city, _current_exposure, _MAX_CITY_DAY_EXPOSURE)
                 _rej["exposure_cap"] += 1
                 continue
             # Post-peak same-day cutoff: don't open new positions on same-day
@@ -3072,7 +3072,7 @@ def _run_auto_trade_cycle():
                 _qday = int(_dm_check.group(1))
                 _is_same_day = _qday == datetime.now(timezone.utc).day
             if _is_same_day and _local_hr >= 17:
-                logger.info("POST_PEAK: %s | same-day market, local hour %d >= 17, skipping new entry", _city, _local_hr)
+                logger.debug("POST_PEAK: %s | same-day market, local hour %d >= 17, skipping new entry", _city, _local_hr)
                 _rej["post_peak"] += 1
                 continue
             # ── Strategy family gate: skip disabled strategy types ──
@@ -3137,7 +3137,7 @@ def _run_auto_trade_cycle():
                             our_prob if sig_type == "BUY YES" else (1 - our_prob),
                             _book, _book_side, cfg["max_size"])
                         if _clob_info and not _clob_info.get("tradeable"):
-                            logger.info("CLOB_SKIP: %s | %s (spread=%.1f%% depth=$%.0f)",
+                            logger.debug("CLOB_SKIP: %s | %s (spread=%.1f%% depth=$%.0f)",
                                 _city, _clob_info.get("reason", "?"),
                                 _clob_info.get("spread_pct", 0),
                                 _clob_info.get("ask_depth", 0))
@@ -3154,7 +3154,7 @@ def _run_auto_trade_cycle():
                             _best_bid = _book.get("best_bid", 0)
                             # Hard spread cap: always skip crazy spreads
                             if _spread_pct > 50:
-                                logger.info("SPREAD_SKIP: %s | spread=%.1f%% > 50%% max (bid=%.3f ask=%.3f)",
+                                logger.debug("SPREAD_SKIP: %s | spread=%.1f%% > 50%% max (bid=%.3f ask=%.3f)",
                                     _city, _spread_pct, _best_bid, _best_ask)
                                 _rej["spread_skip"] += 1
                                 continue
@@ -3171,7 +3171,7 @@ def _run_auto_trade_cycle():
                             # Per-side depth: check the side we actually need to fill
                             _side_depth = _ask_depth if sig_type == "BUY YES" else _bid_depth
                             if _side_depth < _min_depth:
-                                logger.info("DEPTH_SKIP: %s | %s_depth=$%.0f < $%d (spread=%.1f%% ask=%.3f bid=%.3f)",
+                                logger.debug("DEPTH_SKIP: %s | %s_depth=$%.0f < $%d (spread=%.1f%% ask=%.3f bid=%.3f)",
                                     _city, "ask" if sig_type == "BUY YES" else "bid",
                                     _side_depth, _min_depth, _spread_pct, _best_ask, _best_bid)
                                 _rej["depth_skip"] += 1
@@ -3733,7 +3733,7 @@ def _run_auto_trade_cycle():
                 _at_city_key = (_at_city.lower(), _at_today_str)
                 _at_exposure = _city_day_exposure.get(_at_city_key, 0)
                 if _at_exposure >= _MAX_CITY_DAY_EXPOSURE:
-                    logger.info("AGENT_EXPOSURE_CAP: %s/%s | $%.0f deployed (cap=$%d)",
+                    logger.debug("AGENT_EXPOSURE_CAP: %s/%s | $%.0f deployed (cap=$%d)",
                                 _at_sig, _at_city, _at_exposure, _MAX_CITY_DAY_EXPOSURE)
                     _agent_rejected += 1
                     continue
@@ -3756,7 +3756,7 @@ def _run_auto_trade_cycle():
                     _at_qday = int(_at_dm.group(1))
                     _at_same_day = _at_qday == datetime.now(timezone.utc).day
                 if _at_same_day and _at_local_hr >= 17:
-                    logger.info("AGENT_POST_PEAK: %s/%s | same-day, local hour %d >= 17",
+                    logger.debug("AGENT_POST_PEAK: %s/%s | same-day, local hour %d >= 17",
                                 _at_sig, _at_city, _at_local_hr)
                     _agent_rejected += 1
                     continue
@@ -3812,7 +3812,7 @@ def _run_auto_trade_cycle():
                             _at_clob_info = clob_book.edge_at_fill(
                                 _at_our_prob_dec, _at_book, "buy_yes", _at_sz)
                             if _at_clob_info and not _at_clob_info.get("tradeable"):
-                                logger.info("AGENT_CLOB_SKIP: %s/%s | %s (spread=%.1f%%)",
+                                logger.debug("AGENT_CLOB_SKIP: %s/%s | %s (spread=%.1f%%)",
                                             _at_sig, _at_city,
                                             _at_clob_info.get("reason", "?"),
                                             _at_clob_info.get("spread_pct", 0))

@@ -556,7 +556,7 @@ def ensemble_bin_probability(
         _conservative_weight = min(0.50, _ensemble_overconfidence * 0.50)
         _old_blended = blended
         blended = blended * (1 - _conservative_weight) + _conservative_prob * _conservative_weight
-        log.info(
+        log.debug(
             "CALIBRATION_GUARD: %s bin=%.1f%s ens_prob=%.1f%% → blended=%.1f%% "
             "(conservative=%.1f%%, weight=%.0f%%, verified_sigma=%.1f)",
             fc.city, threshold_c, "°C", _old_blended * 100, blended * 100,
