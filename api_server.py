@@ -1027,6 +1027,13 @@ def get_traders():
 # ---------- Live Weather from Open-Meteo ----------
 _weather_cache = {"data": None, "ts": 0}
 
+# ---------- Milan 2-bin resolution tracking (in-memory, log-only) ----------
+# Stores surfaced dq=good Milan adjacent 2-bin candidates awaiting resolution.
+# Key: pair_id  Value: snapshot of all surfacing-time fields.
+# Reset on redeploy — log record in Railway persists independently.
+_2BIN_PENDING: dict = {}
+_2BIN_RESOLVED: set = set()
+
 WEATHER_CITIES = [
     {"name":"London","country":"UK","lat":51.51,"lon":-0.13},
     {"name":"Paris","country":"FR","lat":48.86,"lon":2.35},
@@ -1890,6 +1897,102 @@ def _build_signals(weather_markets, weather_cities):
     # Rank by dollar EV (cost-aware edge), not raw probability edge
     signals.sort(key=lambda s: abs(s.get("ev_dollar", 0)), reverse=True)
 
+    # ── Milan 2-bin resolution check (runs every cycle) ──────────────────────
+    # For each pending dq=good Milan pair whose market_end_date has passed,
+    # fetch the ERA5 archive high, determine leg/pair outcomes, emit resolved log.
+    def _check_2bin_resolution():
+        import urllib.request as _ur
+        import urllib.parse as _up
+        import json as _js
+        _today = datetime.now(timezone.utc).date()
+        for _pid in list(_2BIN_PENDING.keys()):
+            if _pid in _2BIN_RESOLVED:
+                _2BIN_PENDING.pop(_pid, None)
+                continue
+            _snap = _2BIN_PENDING[_pid]
+            try:
+                _end_str = _snap["market_end_date"]
+                _end_date = datetime.strptime(_end_str, "%Y-%m-%d").date()
+            except Exception:
+                continue
+            if _end_date >= _today:
+                continue  # not yet resolvable
+            # Fetch ERA5 archive for Milan (Malpensa settlement coords)
+            try:
+                _params = _up.urlencode({
+                    "latitude": 45.6306,
+                    "longitude": 8.7231,
+                    "start_date": _end_str,
+                    "end_date": _end_str,
+                    "daily": "temperature_2m_max",
+                    "temperature_unit": "celsius",
+                    "timezone": "Europe/Rome",
+                })
+                _url = f"https://archive-api.open-meteo.com/v1/archive?{_params}"
+                _req = _ur.Request(_url, headers={"User-Agent": "weatheredge-bot/2.0"})
+                with _ur.urlopen(_req, timeout=20) as _r:
+                    _arc = _js.loads(_r.read())
+                _vals = (_arc.get("daily") or {}).get("temperature_2m_max") or []
+                if not _vals or _vals[0] is None:
+                    continue  # ERA5 not yet ingested — retry next cycle
+                _actual_high = float(_vals[0])
+            except Exception as _e:
+                logger.debug("2BIN_RESOLVE_FETCH_ERR pair_id=%s: %s", _pid, _e)
+                continue
+            # Determine outcomes
+            _winning_bin = round(_actual_high)
+            _bin_A = _snap["bin_A_threshold_c"]
+            _bin_B = _snap["bin_B_threshold_c"]
+            _leg_A = "WIN" if _winning_bin == int(_bin_A) else "LOSS"
+            _leg_B = "WIN" if _winning_bin == int(_bin_B) else "LOSS"
+            _pair_out = "WIN" if "WIN" in (_leg_A, _leg_B) else "LOSS"
+            # Hypothetical PnL: $1 per leg, $2 total notional
+            _pA = _snap["price_A_at_surfacing"]
+            _pB = _snap["price_B_at_surfacing"]
+            if _leg_A == "WIN":
+                _pnl = (1.0 / _pA) - 2.0
+            elif _leg_B == "WIN":
+                _pnl = (1.0 / _pB) - 2.0
+            else:
+                _pnl = -2.0
+            _pnl_pct = (_pnl / 2.0) * 100.0
+            logger.info(
+                "RECOVERY_2BIN_RESOLVED pair_id=%s city=Milan market_end_date=%s "
+                "bin_A_threshold_c=%.1f bin_B_threshold_c=%.1f "
+                "price_A_at_surfacing=%.4f price_B_at_surfacing=%.4f "
+                "combined_market_cost_at_surfacing=%.4f "
+                "raw_prob_A_at_surfacing=%.4f raw_prob_B_at_surfacing=%.4f "
+                "combined_raw_prob_at_surfacing=%.4f "
+                "raw_2bin_ev_pp_at_surfacing=%.2f "
+                "forecast_center_c_at_surfacing=%.2f "
+                "pair_midpoint_c_at_surfacing=%.1f "
+                "sigma_c_at_surfacing=%.2f "
+                "data_quality_at_surfacing=%s "
+                "actual_high_c=%.1f resolution_source=open-meteo-archive-era5 "
+                "leg_A_outcome=%s leg_B_outcome=%s pair_outcome=%s "
+                "winning_bin_c=%d "
+                "hypothetical_pair_pnl_usd=%.2f hypothetical_pair_pnl_pct=%.1f",
+                _pid, _end_str,
+                _bin_A, _bin_B,
+                _pA, _pB,
+                _snap["combined_market_cost_at_surfacing"],
+                _snap["raw_prob_A_at_surfacing"], _snap["raw_prob_B_at_surfacing"],
+                _snap["combined_raw_prob_at_surfacing"],
+                _snap["raw_2bin_ev_pp_at_surfacing"],
+                _snap["forecast_center_c_at_surfacing"],
+                _snap["pair_midpoint_c_at_surfacing"],
+                _snap["sigma_c_at_surfacing"],
+                _snap["data_quality_at_surfacing"],
+                _actual_high,
+                _leg_A, _leg_B, _pair_out,
+                _winning_bin,
+                _pnl, _pnl_pct,
+            )
+            _2BIN_RESOLVED.add(_pid)
+            _2BIN_PENDING.pop(_pid, None)
+
+    _check_2bin_resolution()
+
     # ── Adjacent 2-bin validation — Milan only, log-only, no execution ───────
     # Collects all Milan exact-bin signals (regardless of single-bin gate result),
     # forms adjacent pairs (threshold_c and threshold_c + 1.0°C), and logs each
@@ -2068,6 +2171,31 @@ def _build_signals(weather_markets, weather_cities):
             "signal=PAPER_2BIN_YES lane=recovery_exact_2bin dq=good",
             _pair_id,
         )
+        # Store in pending tracker — dq=good only, first surfacing only.
+        if _pair_id not in _2BIN_PENDING and _pair_id not in _2BIN_RESOLVED and _bp["data_quality"] == "good":
+            _2BIN_PENDING[_pair_id] = {
+                "market_end_date": _bp_end,
+                "bin_A_threshold_c": _bp["bin_A_threshold_c"],
+                "bin_B_threshold_c": _bp["bin_B_threshold_c"],
+                "price_A_at_surfacing": _bp["price_A"],
+                "price_B_at_surfacing": _bp["price_B"],
+                "combined_market_cost_at_surfacing": _bp["combined_market_cost"],
+                "raw_prob_A_at_surfacing": _bp["raw_prob_A"],
+                "raw_prob_B_at_surfacing": _bp["raw_prob_B"],
+                "combined_raw_prob_at_surfacing": _bp["combined_raw_prob"],
+                "raw_2bin_ev_pp_at_surfacing": _bp["raw_2bin_ev_pp"],
+                "forecast_center_c_at_surfacing": _bp["forecast_center_c"] if _bp["forecast_center_c"] is not None else 0.0,
+                "pair_midpoint_c_at_surfacing": _bp["pair_midpoint_c"],
+                "sigma_c_at_surfacing": _bp["sigma_c"] if _bp["sigma_c"] is not None else 0.0,
+                "data_quality_at_surfacing": _bp["data_quality"],
+            }
+            logger.info(
+                "RECOVERY_2BIN_PENDING_ADDED pair_id=%s market_end_date=%s "
+                "bins=[%.1f,%.1f] dq=%s ev_pp=%.2f",
+                _pair_id, _bp_end,
+                _bp["bin_A_threshold_c"], _bp["bin_B_threshold_c"],
+                _bp["data_quality"], _bp["raw_2bin_ev_pp"],
+            )
 
     # ── RECOVERY_2BIN_BEST_STATIC: observation only (never surfaced) ──────────
     if _qualifying_static:
