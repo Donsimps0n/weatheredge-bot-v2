@@ -1073,6 +1073,59 @@ try:
 except Exception as _le:
     logger.warning("2BIN_PENDING_LOAD_ERR: %s", _le)
 
+# ---------- One-time backfill seed (2026-04-17/18/19) — idempotent ----------
+# These three pairs were observed before persistence existed. Insert them if
+# not already present, then save. On all future starts the load block above
+# handles them; this block is a no-op once they're on disk.
+_SEED_PAIRS = {
+    "milan_2bin_19_20_2026-04-17": {
+        "market_end_date": "2026-04-17",
+        "bin_A_threshold_c": 19.0, "bin_B_threshold_c": 20.0,
+        "price_A_at_surfacing": 0.002, "price_B_at_surfacing": 0.006,
+        "combined_market_cost_at_surfacing": 0.008,
+        "raw_prob_A_at_surfacing": 0.104, "raw_prob_B_at_surfacing": 0.112,
+        "combined_raw_prob_at_surfacing": 0.216,
+        "raw_2bin_ev_pp_at_surfacing": 20.8,
+        "forecast_center_c_at_surfacing": 22.9,
+        "pair_midpoint_c_at_surfacing": 19.5,
+        "sigma_c_at_surfacing": 1.5,
+        "data_quality_at_surfacing": "good",
+    },
+    "milan_2bin_19_20_2026-04-18": {
+        "market_end_date": "2026-04-18",
+        "bin_A_threshold_c": 19.0, "bin_B_threshold_c": 20.0,
+        "price_A_at_surfacing": 0.005, "price_B_at_surfacing": 0.005,
+        "combined_market_cost_at_surfacing": 0.010,
+        "raw_prob_A_at_surfacing": 0.110, "raw_prob_B_at_surfacing": 0.110,
+        "combined_raw_prob_at_surfacing": 0.220,
+        "raw_2bin_ev_pp_at_surfacing": 21.0,
+        "forecast_center_c_at_surfacing": 23.16,
+        "pair_midpoint_c_at_surfacing": 19.5,
+        "sigma_c_at_surfacing": 1.5,
+        "data_quality_at_surfacing": "good",
+    },
+    "milan_2bin_19_20_2026-04-19": {
+        "market_end_date": "2026-04-19",
+        "bin_A_threshold_c": 19.0, "bin_B_threshold_c": 20.0,
+        "price_A_at_surfacing": 0.003, "price_B_at_surfacing": 0.025,
+        "combined_market_cost_at_surfacing": 0.028,
+        "raw_prob_A_at_surfacing": 0.106, "raw_prob_B_at_surfacing": 0.150,
+        "combined_raw_prob_at_surfacing": 0.256,
+        "raw_2bin_ev_pp_at_surfacing": 22.8,
+        "forecast_center_c_at_surfacing": 21.7,
+        "pair_midpoint_c_at_surfacing": 19.5,
+        "sigma_c_at_surfacing": 1.5,
+        "data_quality_at_surfacing": "good",
+    },
+}
+_seed_added = [_k for _k, _v in _SEED_PAIRS.items() if _k not in _2BIN_PENDING and _k not in _2BIN_RESOLVED]
+if _seed_added:
+    for _k in _seed_added:
+        _2BIN_PENDING[_k] = _SEED_PAIRS[_k]
+    _save_2bin_pending()
+    logger.info("2BIN_SEED_INSERTED: added %d historical pair(s) — %s", len(_seed_added), _seed_added)
+del _SEED_PAIRS, _seed_added
+
 WEATHER_CITIES = [
     {"name":"London","country":"UK","lat":51.51,"lon":-0.13},
     {"name":"Paris","country":"FR","lat":48.86,"lon":2.35},
