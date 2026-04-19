@@ -1030,9 +1030,48 @@ _weather_cache = {"data": None, "ts": 0}
 # ---------- Milan 2-bin resolution tracking (in-memory, log-only) ----------
 # Stores surfaced dq=good Milan adjacent 2-bin candidates awaiting resolution.
 # Key: pair_id  Value: snapshot of all surfacing-time fields.
-# Reset on redeploy — log record in Railway persists independently.
+# Persisted to Railway Volume at /data so it survives redeploys.
 _2BIN_PENDING: dict = {}
 _2BIN_RESOLVED: set = set()
+
+# ---------- Milan 2-bin pending — persistent store on /data volume ----------
+_2BIN_PENDING_FILE: str = (
+    "/data/milan_2bin_pending.json" if os.path.isdir("/data") else "milan_2bin_pending.json"
+)
+
+def _save_2bin_pending() -> None:
+    import json as _j, tempfile as _tf
+    _dir = os.path.dirname(os.path.abspath(_2BIN_PENDING_FILE))
+    _tmp = None
+    try:
+        os.makedirs(_dir, exist_ok=True)
+        with _tf.NamedTemporaryFile(mode="w", dir=_dir, delete=False, suffix=".tmp") as _f:
+            _tmp = _f.name
+            _j.dump(_2BIN_PENDING, _f)
+        os.replace(_tmp, _2BIN_PENDING_FILE)
+    except Exception as _e:
+        logger.warning("2BIN_PENDING_SAVE_ERR: %s", _e)
+        if _tmp:
+            try:
+                os.unlink(_tmp)
+            except Exception:
+                pass
+
+try:
+    import json as _j3
+    if os.path.exists(_2BIN_PENDING_FILE):
+        with open(_2BIN_PENDING_FILE) as _f3:
+            _loaded = _j3.load(_f3)
+        for _k, _v in _loaded.items():
+            if _k not in _2BIN_RESOLVED:
+                _2BIN_PENDING[_k] = _v
+        if _2BIN_PENDING:
+            logger.info(
+                "2BIN_PENDING_LOADED: restored %d pair(s) from %s — %s",
+                len(_2BIN_PENDING), _2BIN_PENDING_FILE, list(_2BIN_PENDING.keys()),
+            )
+except Exception as _le:
+    logger.warning("2BIN_PENDING_LOAD_ERR: %s", _le)
 
 WEATHER_CITIES = [
     {"name":"London","country":"UK","lat":51.51,"lon":-0.13},
@@ -2035,6 +2074,7 @@ def _build_signals(weather_markets, weather_cities):
             )
             _2BIN_RESOLVED.add(_pid)
             _2BIN_PENDING.pop(_pid, None)
+            _save_2bin_pending()
 
     _check_2bin_resolution()
 
@@ -2241,6 +2281,7 @@ def _build_signals(weather_markets, weather_cities):
                 _bp["bin_A_threshold_c"], _bp["bin_B_threshold_c"],
                 _bp["data_quality"], _bp["raw_2bin_ev_pp"],
             )
+            _save_2bin_pending()
 
     # ── RECOVERY_2BIN_BEST_STATIC: observation only (never surfaced) ──────────
     if _qualifying_static:
