@@ -2207,7 +2207,14 @@ def _build_signals(weather_markets, weather_cities):
     # Selects the highest raw_2bin_ev_pp pair that clears +5pp.
     # Split by data quality: only dq=good pairs may be surfaced as candidates.
     # dq!=good (static_sigma, fallback, etc.) are logged for observation only.
-    _qualifying_good   = [c for c in _2bin_candidates if c["clears_5pp_screen"] and c["data_quality"] == "good"]
+    _qualifying_good   = [
+        c for c in _2bin_candidates
+        if c["clears_5pp_screen"]
+        and c["data_quality"] == "good"
+        and c["forecast_center_c"] is not None
+        and c["sigma_c"] is not None
+        and abs(c["pair_midpoint_c"] - c["forecast_center_c"]) <= 1.5 * c["sigma_c"]
+    ]
     _qualifying_static = [c for c in _2bin_candidates if c["clears_5pp_screen"] and c["data_quality"] != "good"]
 
     # Helper: resolve end_date string from matching signal for pair_id construction.
