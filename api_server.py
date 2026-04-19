@@ -1915,37 +1915,82 @@ def _build_signals(weather_markets, weather_cities):
                 _end_date = datetime.strptime(_end_str, "%Y-%m-%d").date()
             except Exception:
                 continue
-            if _end_date >= _today:
+            if _end_date > _today:
                 continue  # not yet resolvable
-            # Fetch ERA5 archive for Milan (Malpensa settlement coords)
-            try:
-                _params = _up.urlencode({
-                    "latitude": 45.6306,
-                    "longitude": 8.7231,
-                    "start_date": _end_str,
-                    "end_date": _end_str,
-                    "daily": "temperature_2m_max",
-                    "temperature_unit": "celsius",
-                    "timezone": "Europe/Rome",
-                })
-                _url = f"https://archive-api.open-meteo.com/v1/archive?{_params}"
-                _req = _ur.Request(_url, headers={"User-Agent": "weatheredge-bot/2.0"})
-                with _ur.urlopen(_req, timeout=20) as _r:
-                    _arc = _js.loads(_r.read())
-                _vals = (_arc.get("daily") or {}).get("temperature_2m_max") or []
-                if not _vals or _vals[0] is None:
-                    continue  # ERA5 not yet ingested — retry next cycle
-                _actual_high = float(_vals[0])
-            except Exception as _e:
-                logger.debug("2BIN_RESOLVE_FETCH_ERR pair_id=%s: %s", _pid, _e)
-                continue
-            # Determine outcomes
-            _winning_bin = round(_actual_high)
+            # Shared setup
             _bin_A = _snap["bin_A_threshold_c"]
             _bin_B = _snap["bin_B_threshold_c"]
-            _leg_A = "WIN" if _winning_bin == int(_bin_A) else "LOSS"
-            _leg_B = "WIN" if _winning_bin == int(_bin_B) else "LOSS"
+            _actual_high = None
+            _resolution_source = None
+            _leg_A = None
+            _leg_B = None
+            _winning_bin = None
+            # ── 1. Polymarket resolution (primary, same-day) ──────────────────
+            import re as _re2
+            try:
+                _edate = datetime.strptime(_end_str, "%Y-%m-%d")
+                _pm_slug = (
+                    f"highest-temperature-in-milan-on-"
+                    f"{_edate.strftime('%B').lower()}-{_edate.day}-{_edate.year}"
+                )
+                _pm_url = f"https://gamma-api.polymarket.com/events?slug={_pm_slug}"
+                _pm_req = _ur.Request(_pm_url, headers={"User-Agent": "weatheredge-bot/2.0"})
+                with _ur.urlopen(_pm_req, timeout=10) as _pm_r:
+                    _pm_data = _js.loads(_pm_r.read())
+                _pm_mkts = (_pm_data[0].get("markets") or []) if _pm_data else []
+                _leg_A_tag = f"be {int(_bin_A)}\u00b0C on"
+                _leg_B_tag = f"be {int(_bin_B)}\u00b0C on"
+                for _m in _pm_mkts:
+                    if _m.get("umaResolutionStatus") != "resolved":
+                        continue
+                    _q = _m.get("question", "")
+                    _prices = _js.loads(_m.get("outcomePrices", "[]"))
+                    if not _prices:
+                        continue
+                    _is_yes = (_prices[0] == "1")
+                    if _leg_A_tag in _q:
+                        _leg_A = "WIN" if _is_yes else "LOSS"
+                    if _leg_B_tag in _q:
+                        _leg_B = "WIN" if _is_yes else "LOSS"
+                    if _is_yes and _winning_bin is None:
+                        _tm = _re2.search(r"be (\d+)", _q)
+                        if _tm:
+                            _winning_bin = int(_tm.group(1))
+                            _actual_high = float(_winning_bin)
+                if _leg_A is not None and _leg_B is not None:
+                    _resolution_source = "polymarket"
+            except Exception as _pe:
+                logger.debug("2BIN_POLYMARKET_FETCH_ERR pair_id=%s: %s", _pid, _pe)
+            # ── 2. ERA5 fallback (Polymarket unavailable or not yet resolved) ──
+            if _resolution_source is None:
+                try:
+                    _params = _up.urlencode({
+                        "latitude": 45.6306, "longitude": 8.7231,
+                        "start_date": _end_str, "end_date": _end_str,
+                        "daily": "temperature_2m_max",
+                        "temperature_unit": "celsius", "timezone": "Europe/Rome",
+                    })
+                    _url = f"https://archive-api.open-meteo.com/v1/archive?{_params}"
+                    _req = _ur.Request(_url, headers={"User-Agent": "weatheredge-bot/2.0"})
+                    with _ur.urlopen(_req, timeout=20) as _r:
+                        _arc = _js.loads(_r.read())
+                    _vals = (_arc.get("daily") or {}).get("temperature_2m_max") or []
+                    if not _vals or _vals[0] is None:
+                        continue  # ERA5 not yet ingested — retry next cycle
+                    _actual_high = float(_vals[0])
+                    _resolution_source = "open-meteo-archive-era5"
+                    _winning_bin = round(_actual_high)
+                    _leg_A = "WIN" if _winning_bin == int(_bin_A) else "LOSS"
+                    _leg_B = "WIN" if _winning_bin == int(_bin_B) else "LOSS"
+                except Exception as _e:
+                    logger.debug("2BIN_RESOLVE_FETCH_ERR pair_id=%s: %s", _pid, _e)
+                    continue
+            if _resolution_source is None:
+                continue
+            # Determine pair outcome from direct leg outcomes
             _pair_out = "WIN" if "WIN" in (_leg_A, _leg_B) else "LOSS"
+            _winning_bin = _winning_bin if _winning_bin is not None else -1
+            _actual_high = _actual_high if _actual_high is not None else float(_winning_bin)
             # Hypothetical PnL: $1 per leg, $2 total notional
             _pA = _snap["price_A_at_surfacing"]
             _pB = _snap["price_B_at_surfacing"]
@@ -1968,7 +2013,7 @@ def _build_signals(weather_markets, weather_cities):
                 "pair_midpoint_c_at_surfacing=%.1f "
                 "sigma_c_at_surfacing=%.2f "
                 "data_quality_at_surfacing=%s "
-                "actual_high_c=%.1f resolution_source=open-meteo-archive-era5 "
+                "actual_high_c=%.1f resolution_source=%s "
                 "leg_A_outcome=%s leg_B_outcome=%s pair_outcome=%s "
                 "winning_bin_c=%d "
                 "hypothetical_pair_pnl_usd=%.2f hypothetical_pair_pnl_pct=%.1f",
@@ -1983,7 +2028,7 @@ def _build_signals(weather_markets, weather_cities):
                 _snap["pair_midpoint_c_at_surfacing"],
                 _snap["sigma_c_at_surfacing"],
                 _snap["data_quality_at_surfacing"],
-                _actual_high,
+                _actual_high, _resolution_source,
                 _leg_A, _leg_B, _pair_out,
                 _winning_bin,
                 _pnl, _pnl_pct,
