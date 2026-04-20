@@ -2152,8 +2152,8 @@ def _build_signals(weather_markets, weather_cities):
         # Only bins that are exactly 1.0°C apart qualify as an adjacent pair
         if abs(_sB.get("threshold_c", 0.0) - _sA.get("threshold_c", 0.0) - 1.0) > 0.01:
             continue
-        _raw_prob_A = round(_sA["our_prob"] / 100.0, 4)
-        _raw_prob_B = round(_sB["our_prob"] / 100.0, 4)
+        _raw_prob_A = round(_sA.get("_raw_prob_pre_se_pct", _sA["our_prob"]) / 100.0, 4)
+        _raw_prob_B = round(_sB.get("_raw_prob_pre_se_pct", _sB["our_prob"]) / 100.0, 4)
         _price_A    = round(_sA["market_price"] / 100.0, 4)
         _price_B    = round(_sB["market_price"] / 100.0, 4)
         _combined_raw_prob = round(_raw_prob_A + _raw_prob_B, 4)
